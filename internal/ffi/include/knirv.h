@@ -22,4 +22,9 @@ typedef enum {
 knirv_status_t knirv_sdk_invoke_proto(knirv_bytes_t request_proto, knirv_bytes_t *response_proto);
 void knirv_sdk_free_buffer(knirv_bytes_t bytes);
 
+/* Immutable module registry. Outputs are copied from SDK-owned embedded bytes
+ * and must be released with knirv_sdk_free_buffer. */
+knirv_status_t knirv_module_manifest(knirv_bytes_t *out);
+knirv_status_t knirv_module_bytes(knirv_bytes_t name, knirv_bytes_t *out);
+
 #endif

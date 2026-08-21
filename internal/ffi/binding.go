@@ -41,3 +41,39 @@ func InvokeProto(request []byte) ([]byte, error) {
 	}
 	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(output.ptr)), int(output.len))...), nil
 }
+
+// ModuleManifest returns the JSON manifest emitted by the Rust module registry.
+func ModuleManifest() ([]byte, error) {
+	var output C.knirv_bytes_t
+	status := C.knirv_module_manifest(&output)
+	if status != C.KNIRV_STATUS_OK {
+		return nil, fmt.Errorf("KNIRV module manifest returned status %d", int(status))
+	}
+	return copyOutput(output)
+}
+
+// ModuleBytes returns a Go-owned copy of the named embedded WASM artifact.
+func ModuleBytes(name string) ([]byte, error) {
+	if name == "" {
+		return nil, fmt.Errorf("KNIRV module name is required")
+	}
+	input := []byte(name)
+	var output C.knirv_bytes_t
+	status := C.knirv_module_bytes(C.knirv_bytes_t{ptr: (*C.uint8_t)(unsafe.Pointer(unsafe.SliceData(input))), len: C.size_t(len(input))}, &output)
+	if status != C.KNIRV_STATUS_OK {
+		return nil, fmt.Errorf("KNIRV module %q returned status %d", name, int(status))
+	}
+	return copyOutput(output)
+}
+
+func copyOutput(output C.knirv_bytes_t) ([]byte, error) {
+	if output.ptr == nil || output.len == 0 {
+		return nil, fmt.Errorf("KNIRV native core returned an empty response")
+	}
+	defer C.knirv_sdk_free_buffer(output)
+	maxInt := int(^uint(0) >> 1)
+	if uint64(output.len) > uint64(maxInt) {
+		return nil, fmt.Errorf("KNIRV native response exceeds Go slice limits")
+	}
+	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(output.ptr)), int(output.len))...), nil
+}

@@ -15,3 +15,13 @@ func TestExecuteCryptoSHA256(t *testing.T) {
 		t.Fatalf("response = %s, want %s", data, want)
 	}
 }
+
+func TestModuleBytesAreManifestVerified(t *testing.T) {
+	bytes, metadata, err := ModuleBytes("crypto-core")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bytes) == 0 || metadata.ModuleKind != "crypto" {
+		t.Fatalf("unexpected module metadata: %+v", metadata)
+	}
+}
