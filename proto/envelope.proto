@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package knirv.sdk.v1;
+
+option go_package = "github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package/gen/proto;proto";
+
+// SdkRequest is the stable byte boundary between Go and the Rust core.
+// payload carries the JSON operation payload defined by the binding envelope.
+message SdkRequest {
+  string action = 1;
+  bytes payload = 2;
+}
+
+message SdkResponse {
+  bool success = 1;
+  string error_message = 2;
+  bytes data = 3;
+}
