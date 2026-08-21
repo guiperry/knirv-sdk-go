@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package/gen/proto"
-	"github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package/internal/ffi"
+	pb "github.com/guiperry/knirv-sdk-go/gen/proto"
+	"github.com/guiperry/knirv-sdk-go/internal/ffi"
 	"google.golang.org/protobuf/proto"
 )
 

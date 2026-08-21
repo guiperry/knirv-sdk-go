@@ -1,4 +1,4 @@
-module github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package
+module github.com/guiperry/knirv-sdk-go
 
 go 1.22
 

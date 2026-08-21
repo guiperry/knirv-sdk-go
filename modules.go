@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package/internal/ffi"
+	"github.com/guiperry/knirv-sdk-go/internal/ffi"
 )
 
 // WasmModuleMetadata is the versioned, digest-pinned module manifest shape.

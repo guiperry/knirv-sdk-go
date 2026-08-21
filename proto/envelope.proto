@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package knirv.sdk.v1;
 
-option go_package = "github.com/KNIRV/KNIRV_NETWORK/KNIRVSDK/go-package/gen/proto;proto";
+option go_package = "github.com/guiperry/knirv-sdk-go/gen/proto;proto";
 
 // SdkRequest is the stable byte boundary between Go and the Rust core.
 // payload carries the JSON operation payload defined by the binding envelope.
