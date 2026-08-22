@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "index": 0,
+      "timestamp": "2026-07-07T00:00:00Z",
+      "type": "session.start",
+      "payload": {"a": 1, "z": 2},
+      "hash": "sha256:4863a557c8fbc3379915bbaccb12dbe6dec75e09fd772ebbeef017d02fd6dab0"
+    },
+    {
+      "index": 1,
+      "timestamp": "2026-07-07T00:00:01Z",
+      "type": "command.requested",
+      "payload": {"command": "go test ./...", "cwd": "/workspace"},
+      "prev_hash": "sha256:4863a557c8fbc3379915bbaccb12dbe6dec75e09fd772ebbeef017d02fd6dab0",
+      "hash": "sha256:f83e05b9052ef41737e21c5fb6c95449569cac740f7cd38586f698ebfd339ae1"
+    }
+  ],
+  "root": "sha256:f83e05b9052ef41737e21c5fb6c95449569cac740f7cd38586f698ebfd339ae1"
+}
+
