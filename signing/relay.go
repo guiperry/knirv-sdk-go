@@ -1,8 +1,11 @@
 package signing
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -148,4 +151,58 @@ func ParseRelayEnvelope(data []byte) (RelayEnvelope, error) {
 		}
 	}
 	return normalizeRelayEnvelope(out)
+}
+
+// CLISupervisorRelayParams holds the parameters for creating a CLI supervisor relay envelope.
+type CLISupervisorRelayParams struct {
+	RequestID   string
+	UserSubject string
+	DeviceID    string
+	TargetID    string
+	Capability  string
+	Sequence    uint64
+	LeaseEpoch  uint64
+	Payload     []byte
+	TTLSeconds  int64
+}
+
+// NewCLISupervisorRelay creates a RelayEnvelope for a CLI supervisor target.
+func NewCLISupervisorRelay(params CLISupervisorRelayParams) (RelayEnvelope, error) {
+	now := time.Now().Unix()
+	expiresAt := now + params.TTLSeconds
+	if expiresAt <= now {
+		expiresAt = now + 60
+	}
+	e := RelayEnvelope{
+		SchemaVersion: RelayEnvelopeSchemaVersion,
+		RequestID:     params.RequestID,
+		UserSubject:   params.UserSubject,
+		DeviceID:      params.DeviceID,
+		TargetType:    RelayTargetCliSupervisor,
+		TargetID:      params.TargetID,
+		Capability:    params.Capability,
+		Sequence:      params.Sequence,
+		LeaseEpoch:    params.LeaseEpoch,
+		IssuedAtUnix:  now,
+		ExpiresAtUnix: expiresAt,
+	}
+	if params.Payload != nil {
+		digest := sha256.Sum256(params.Payload)
+		e.PayloadDigest = "sha256:" + hex.EncodeToString(digest[:])
+	}
+	return normalizeRelayEnvelope(e)
+}
+
+// SignCLISupervisorRelayResponse signs a relay envelope as a MessageEnvelope with relay-response purpose.
+func SignCLISupervisorRelayResponse(privateKey []byte, envelope RelayEnvelope, chainID string) (SignedMessage, error) {
+	return SignMessage(privateKey, MessageEnvelope{
+		SchemaVersion: MessageSchemaVersion,
+		Domain:        ControllerDomain,
+		Purpose:       PurposeRelayResponse,
+		ChainID:       chainID,
+		Nonce:         envelope.RequestID,
+		IssuedAtUnix:  envelope.IssuedAtUnix,
+		ExpiresAtUnix: envelope.ExpiresAtUnix,
+		Payload:       []byte{},
+	})
 }
