@@ -50,13 +50,13 @@ func BuildEventLog(events []Event) ([]Event, string, error) {
 }
 
 // VerifyEventLog checks the hash chain and root by delegating to the SDK's
-// dve-verifier WASM module (see wasmverify.go) rather than re-deriving the
+// proof-verifier WASM module (see wasmverify.go) rather than re-deriving the
 // chaining algorithm here, so this always agrees with the Rust verifier.
 func VerifyEventLog(events []Event, expectedRoot string) error {
 	ctx := context.Background()
-	verifier, err := loadDveVerifierModule(ctx)
+	verifier, err := loadProofVerifierModule(ctx)
 	if err != nil {
-		return fmt.Errorf("dve-verifier unavailable: %w", err)
+		return fmt.Errorf("proof-verifier unavailable: %w", err)
 	}
 	input, err := json.Marshal(struct {
 		Events       []Event `json:"events"`
@@ -76,7 +76,7 @@ func VerifyEventLog(events []Event, expectedRoot string) error {
 		Error        string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("decode dve-verifier response: %w", err)
+		return fmt.Errorf("decode proof-verifier response: %w", err)
 	}
 	if !result.Valid {
 		if result.FailingIndex != nil {

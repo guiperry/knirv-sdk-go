@@ -36,7 +36,7 @@ type WasmPublicationPayload struct {
 	NetworkFingerprint  string
 	ArtifactDigest      string // "sha256:<64 hex>"
 	ByteSize            uint64
-	ModuleKind          string // crypto | dve_verifier | relay
+	ModuleKind          string // crypto | proof_verifier | relay
 	AbiVersion          uint64
 	ModuleSchemaVersion uint64
 	BuildID             string

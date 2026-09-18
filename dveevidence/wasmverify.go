@@ -10,8 +10,8 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// Operation codes from the dve-verifier WASM module's raw ABI
-// (KNIRVSDK/core/wasm-modules/dve-verifier/src/lib.rs). Verification here
+// Operation codes from the proof-verifier WASM module's raw ABI
+// (KNIRVSDK/core/wasm-modules/proof-verifier/src/lib.rs). Verification here
 // defers to that single canonical implementation instead of re-deriving the
 // hash-chain/Merkle algorithms in Go, so Go and Rust callers can never drift.
 const (
@@ -19,7 +19,7 @@ const (
 	opVerifyArtifactMerkle int32 = 6
 )
 
-type dveVerifierModule struct {
+type proofVerifierModule struct {
 	mu             sync.Mutex
 	runtime        wazero.Runtime
 	module         api.Module
@@ -33,25 +33,25 @@ type dveVerifierModule struct {
 
 var (
 	verifierOnce sync.Once
-	verifierInst *dveVerifierModule
+	verifierInst *proofVerifierModule
 	verifierErr  error
 )
 
-func loadDveVerifierModule(ctx context.Context) (*dveVerifierModule, error) {
+func loadProofVerifierModule(ctx context.Context) (*proofVerifierModule, error) {
 	verifierOnce.Do(func() {
-		wasmBytes, _, err := knirv.ModuleBytes("dve-verifier")
+		wasmBytes, _, err := knirv.ModuleBytes("proof-verifier")
 		if err != nil {
-			verifierErr = fmt.Errorf("load dve-verifier module: %w", err)
+			verifierErr = fmt.Errorf("load proof-verifier module: %w", err)
 			return
 		}
 		rt := wazero.NewRuntime(ctx)
 		mod, err := rt.Instantiate(ctx, wasmBytes)
 		if err != nil {
 			rt.Close(ctx)
-			verifierErr = fmt.Errorf("instantiate dve-verifier module: %w", err)
+			verifierErr = fmt.Errorf("instantiate proof-verifier module: %w", err)
 			return
 		}
-		v := &dveVerifierModule{runtime: rt, module: mod}
+		v := &proofVerifierModule{runtime: rt, module: mod}
 		exports := map[string]*api.Function{
 			"invoke":         &v.invoke,
 			"allocate":       &v.allocate,
@@ -63,7 +63,7 @@ func loadDveVerifierModule(ctx context.Context) (*dveVerifierModule, error) {
 		for name, slot := range exports {
 			fn := mod.ExportedFunction(name)
 			if fn == nil {
-				verifierErr = fmt.Errorf("dve-verifier module missing export %q", name)
+				verifierErr = fmt.Errorf("proof-verifier module missing export %q", name)
 				return
 			}
 			*slot = fn
@@ -73,10 +73,10 @@ func loadDveVerifierModule(ctx context.Context) (*dveVerifierModule, error) {
 	return verifierInst, verifierErr
 }
 
-// call invokes one dve-verifier operation with a JSON payload and returns its
+// call invokes one proof-verifier operation with a JSON payload and returns its
 // JSON response. The module instance is not safe for concurrent calls
 // (shared linear memory), so calls are serialized.
-func (v *dveVerifierModule) call(ctx context.Context, op int32, input []byte) ([]byte, error) {
+func (v *proofVerifierModule) call(ctx context.Context, op int32, input []byte) ([]byte, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -84,36 +84,36 @@ func (v *dveVerifierModule) call(ctx context.Context, op int32, input []byte) ([
 	if len(input) > 0 {
 		res, err := v.allocate.Call(ctx, uint64(len(input)))
 		if err != nil {
-			return nil, fmt.Errorf("dve-verifier allocate: %w", err)
+			return nil, fmt.Errorf("proof-verifier allocate: %w", err)
 		}
 		inPtr = uint32(res[0])
 		if inPtr == 0 {
-			return nil, fmt.Errorf("dve-verifier allocate returned null pointer")
+			return nil, fmt.Errorf("proof-verifier allocate returned null pointer")
 		}
 		defer v.deallocate.Call(ctx, uint64(inPtr), uint64(len(input)))
 		if !v.module.Memory().Write(inPtr, input) {
-			return nil, fmt.Errorf("dve-verifier: failed writing input into wasm memory")
+			return nil, fmt.Errorf("proof-verifier: failed writing input into wasm memory")
 		}
 	}
 
 	invokeRes, err := v.invoke.Call(ctx, uint64(uint32(op)), uint64(inPtr), uint64(len(input)))
 	if err != nil {
-		return nil, fmt.Errorf("dve-verifier invoke: %w", err)
+		return nil, fmt.Errorf("proof-verifier invoke: %w", err)
 	}
 	handle := invokeRes[0]
 	defer v.freeResult.Call(ctx, handle)
 
 	ptrRes, err := v.resultPointer.Call(ctx, handle)
 	if err != nil {
-		return nil, fmt.Errorf("dve-verifier result_pointer: %w", err)
+		return nil, fmt.Errorf("proof-verifier result_pointer: %w", err)
 	}
 	lenRes, err := v.resultLength.Call(ctx, handle)
 	if err != nil {
-		return nil, fmt.Errorf("dve-verifier result_length: %w", err)
+		return nil, fmt.Errorf("proof-verifier result_length: %w", err)
 	}
 	out, ok := v.module.Memory().Read(uint32(ptrRes[0]), uint32(lenRes[0]))
 	if !ok {
-		return nil, fmt.Errorf("dve-verifier: failed reading result from wasm memory")
+		return nil, fmt.Errorf("proof-verifier: failed reading result from wasm memory")
 	}
 	return append([]byte(nil), out...), nil
 }

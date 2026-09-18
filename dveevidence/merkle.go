@@ -31,16 +31,16 @@ func MerkleRoot(hashes []string) string {
 }
 
 // verifyMerkle checks the artifact Merkle root by delegating to the SDK's
-// dve-verifier WASM module (see wasmverify.go), the same canonical
+// proof-verifier WASM module (see wasmverify.go), the same canonical
 // implementation the Rust side uses, rather than recomputing locally.
 func verifyMerkle(hashes []string, expected string) error {
 	if strings.TrimSpace(expected) == "" {
 		return &VerifyError{Code: "merkle", Message: "missing artifact merkle root"}
 	}
 	ctx := context.Background()
-	verifier, err := loadDveVerifierModule(ctx)
+	verifier, err := loadProofVerifierModule(ctx)
 	if err != nil {
-		return &VerifyError{Code: "merkle", Message: fmt.Sprintf("dve-verifier unavailable: %v", err)}
+		return &VerifyError{Code: "merkle", Message: fmt.Sprintf("proof-verifier unavailable: %v", err)}
 	}
 	input, err := json.Marshal(struct {
 		ArtifactHashes []string `json:"artifact_hashes"`
@@ -57,7 +57,7 @@ func verifyMerkle(hashes []string, expected string) error {
 		Valid bool `json:"valid"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return &VerifyError{Code: "merkle", Message: fmt.Sprintf("decode dve-verifier response: %v", err)}
+		return &VerifyError{Code: "merkle", Message: fmt.Sprintf("decode proof-verifier response: %v", err)}
 	}
 	if !result.Valid {
 		return &VerifyError{Code: "merkle", Message: "artifact merkle root mismatch"}
