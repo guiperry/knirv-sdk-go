@@ -2,13 +2,23 @@ package dveevidence
 
 import (
 	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
-	knirv "github.com/guiperry/knirv-sdk-go"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 )
+
+const proofVerifierSHA256 = "015515f404d4272c46047700bcf9b9ca934e12195d77ff62679dcaae0d663293"
+
+// proofVerifierWASM is bundled with the pure-Go evidence verifier so callers
+// do not need the SDK's native CGO bridge merely to verify proof data.
+//
+//go:embed assets/proof-verifier.wasm
+var proofVerifierWASM []byte
 
 // Operation codes from the proof-verifier WASM module's raw ABI
 // (KNIRVSDK/core/wasm-modules/proof-verifier/src/lib.rs). Verification here
@@ -20,15 +30,15 @@ const (
 )
 
 type proofVerifierModule struct {
-	mu             sync.Mutex
-	runtime        wazero.Runtime
-	module         api.Module
-	invoke         api.Function
-	allocate       api.Function
-	deallocate     api.Function
-	resultPointer  api.Function
-	resultLength   api.Function
-	freeResult     api.Function
+	mu            sync.Mutex
+	runtime       wazero.Runtime
+	module        api.Module
+	invoke        api.Function
+	allocate      api.Function
+	deallocate    api.Function
+	resultPointer api.Function
+	resultLength  api.Function
+	freeResult    api.Function
 }
 
 var (
@@ -39,7 +49,7 @@ var (
 
 func loadProofVerifierModule(ctx context.Context) (*proofVerifierModule, error) {
 	verifierOnce.Do(func() {
-		wasmBytes, _, err := knirv.ModuleBytes("proof-verifier")
+		wasmBytes, err := verifiedProofVerifierBytes()
 		if err != nil {
 			verifierErr = fmt.Errorf("load proof-verifier module: %w", err)
 			return
@@ -71,6 +81,14 @@ func loadProofVerifierModule(ctx context.Context) (*proofVerifierModule, error) 
 		verifierInst = v
 	})
 	return verifierInst, verifierErr
+}
+
+func verifiedProofVerifierBytes() ([]byte, error) {
+	digest := sha256.Sum256(proofVerifierWASM)
+	if hex.EncodeToString(digest[:]) != proofVerifierSHA256 {
+		return nil, fmt.Errorf("embedded proof-verifier digest mismatch: got %x, want %s", digest, proofVerifierSHA256)
+	}
+	return append([]byte(nil), proofVerifierWASM...), nil
 }
 
 // call invokes one proof-verifier operation with a JSON payload and returns its

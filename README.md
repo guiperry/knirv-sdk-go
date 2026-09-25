@@ -20,3 +20,8 @@ Build or refresh the archive for the current host with
 `ModuleManifest`, `ModuleBytes`, and `WriteModule` expose the core's four
 versioned WASM artifacts. Bytes are copied into Go memory and SHA-256 verified
 against the Rust-provided manifest before being returned or written.
+
+`dveevidence` embeds the digest-pinned `proof-verifier.wasm` directly so that
+proof and event-log verification builds with `CGO_ENABLED=0` on every Go
+platform. The root `knirv` client remains CGO-backed and still requires the
+matching native archive for its target platform.
