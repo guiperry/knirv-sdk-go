@@ -301,3 +301,28 @@ func TestClientRegistryAndHeartAndHasher(t *testing.T) {
 		t.Fatalf("status %v %v", s, err)
 	}
 }
+
+func TestPlatformStatusRoles(t *testing.T) {
+	var cases map[string]struct {
+		Status PlatformStatus `json:"status"`
+		Roles  []RoleLine     `json:"roles"`
+	}
+	load(t, "platform_status.json", &cases)
+	if len(cases) != 3 {
+		t.Fatalf("expected 3 cases, got %d", len(cases))
+	}
+	for name, c := range cases {
+		got := c.Status.Roles()
+		if len(got) != len(c.Roles) {
+			t.Fatalf("%s: %d roles, want %d", name, len(got), len(c.Roles))
+		}
+		for i := range got {
+			if got[i] != c.Roles[i] {
+				t.Errorf("%s[%d]:\n got  %+v\n want %+v", name, i, got[i], c.Roles[i])
+			}
+		}
+	}
+	if s := (RoleLine{Label: "a", Model: "m", State: "ready"}).String(); s != "a -> m - [ready]" {
+		t.Fatalf("%q", s)
+	}
+}
