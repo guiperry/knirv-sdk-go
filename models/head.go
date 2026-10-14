@@ -9,10 +9,6 @@ import (
 // namespace is changed in one place.
 const HeadPrefix = "/models/head"
 
-// LegacyHeadPrefix is where the previous release served the HEAD. The daemon
-// still answers there so an older backend keeps working; removed in P9.
-const LegacyHeadPrefix = "/heart/head"
-
 // Decision is one decision head's output.
 type Decision struct {
 	Name          string    `json:"name"`
