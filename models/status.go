@@ -19,8 +19,29 @@ type LlamaAdapter struct {
 	BundleHash string `json:"bundle_hash,omitempty"`
 }
 
+// FrameStatus is the llama wrapper's role-frame check: how many calls carried a valid
+// frame. Unframed must be 0 for a while in warn mode before enforce is switched on.
+type FrameStatus struct {
+	Mode     string `json:"mode"` // off, warn, enforce
+	Version  string `json:"constitution_version"`
+	Framed   uint64 `json:"framed"`
+	Unframed uint64 `json:"unframed"`
+	Invalid  uint64 `json:"invalid"`
+	Rejected uint64 `json:"rejected"`
+	Teacher  uint64 `json:"teacher"`
+}
+
+// QueueStatus is the wrapper's admission queue by priority class (P0..P3).
+type QueueStatus struct {
+	FreeSlots int       `json:"free_slots"`
+	Depth     [4]int    `json:"depth"`
+	Admitted  [4]uint64 `json:"admitted"`
+}
+
 // LlamaStatus is the embedded llama.cpp. BaseModel is a file name, never a path.
 type LlamaStatus struct {
+	Frames     *FrameStatus   `json:"frames,omitempty"`
+	Queue      *QueueStatus   `json:"queue,omitempty"`
 	Ready      bool           `json:"ready"`
 	BaseModel  string         `json:"base_model,omitempty"`
 	BaseSHA256 string         `json:"base_sha256,omitempty"`

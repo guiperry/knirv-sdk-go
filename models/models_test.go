@@ -326,3 +326,30 @@ func TestPlatformStatusRoles(t *testing.T) {
 		t.Fatalf("%q", s)
 	}
 }
+
+func TestIndexStatusFixture(t *testing.T) {
+	var cases map[string]IndexStatus
+	raw, err := os.ReadFile(vectors + "/index_status.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if cases["empty"].Spans != 0 || cases["empty"].Retrieval != "lexical" || len(cases["empty"].EmbedderIDs) != 0 {
+		t.Fatalf("%+v", cases["empty"])
+	}
+	b := cases["built"]
+	if b.Tiers["reference"] != 1100 || b.EmbedderIDs[0] != "ollama:nomic-embed-text" || b.HitRate != 0.725 || b.LastBatch == "" {
+		t.Fatalf("%+v", b)
+	}
+	// Served over the wire it round-trips through the client.
+	mux := http.NewServeMux()
+	mux.HandleFunc(HasherPrefix+"/index/status", func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(b) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	got, err := NewClient(srv.URL, nil).IndexStatus(context.Background())
+	if err != nil || got.Spans != 1200 || got.Version != b.Version {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

@@ -8,12 +8,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/guiperry/knirv-sdk-go/models/frame"
 )
 
 // Where the daemon serves each model. One namespace for all three.
 const (
 	RegistryPath = "/models/registry"
 	HealthPath   = "/models/health"
+	// ManifestPath serves the generated capability manifest: stages, tools and
+	// each stage's current frame hash (frame.Manifest).
+	ManifestPath = "/models/manifest"
 	HeartPrefix  = "/models/heart"
 	HasherPrefix = "/models/hasher"
 )
@@ -119,6 +124,16 @@ func (c *Client) Health(ctx context.Context) (*Health, error) {
 	return &out, nil
 }
 
+// CapabilityManifest reads what the daemon tells its model: stages, tools and frame hashes.
+// (Manifest is the HEAD model manifest.)
+func (c *Client) CapabilityManifest(ctx context.Context) (*frame.Manifest, error) {
+	var out frame.Manifest
+	if err := c.getJSON(ctx, ManifestPath, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // HeartHealth asks HEART whether it can generate. It does not build HEART.
 func (c *Client) HeartHealth(ctx context.Context) (*HeartHealth, error) {
 	var out HeartHealth
@@ -157,6 +172,33 @@ func (c *Client) HasherValidate(ctx context.Context, req HasherValidateRequest) 
 func (c *Client) HasherInfer(ctx context.Context, text string) (*HasherInferResult, error) {
 	var out HasherInferResult
 	if err := c.postJSON(ctx, HasherPrefix+"/infer", map[string]any{"text": text}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// IndexStatus is GET /models/hasher/index/status: what the evidence index holds and
+// how it has been used. EmbedderIDs lists the embedders vectors in the index were built
+// with (empty while it is lexical-only); a query is only ever compared with its own.
+type IndexStatus struct {
+	Version     string         `json:"index_version"`
+	KeyVersion  string         `json:"key_version"`
+	EmbedderIDs []string       `json:"embedder_ids"`
+	Retrieval   string         `json:"retrieval"` // "lexical" until vector search lands
+	Segments    int            `json:"segments"`
+	Spans       int            `json:"spans"`
+	Tiers       map[string]int `json:"tiers"` // reference, user, quarantine
+	ChunkWords  int            `json:"chunk_words"`
+	Searches    uint64         `json:"searches"`
+	HitRate     float64        `json:"hit_rate"`
+	LastBatch   string         `json:"last_batch,omitempty"`
+	LastIngest  string         `json:"last_ingest,omitempty"`
+}
+
+// IndexStatus reads the evidence index status.
+func (c *Client) IndexStatus(ctx context.Context) (*IndexStatus, error) {
+	var out IndexStatus
+	if err := c.getJSON(ctx, HasherPrefix+"/index/status", &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
