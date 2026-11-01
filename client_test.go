@@ -57,7 +57,7 @@ func TestExecuteBindingFixtures(t *testing.T) {
 			}
 			if fixture.Operation == "wasm.manifest" {
 				modules, ok := response["modules"].([]any)
-				if !ok || len(modules) != 4 {
+				if !ok || len(modules) != 3 {
 					t.Fatalf("invalid WASM manifest response: %#v", response)
 				}
 			}
@@ -65,12 +65,20 @@ func TestExecuteBindingFixtures(t *testing.T) {
 	}
 }
 
-func TestModuleBytesAreManifestVerified(t *testing.T) {
-	bytes, metadata, err := ModuleBytes("crypto-core")
+func TestModuleManifestListsEveryModule(t *testing.T) {
+	modules, err := ModuleManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bytes) == 0 || metadata.ModuleKind != "crypto" {
-		t.Fatalf("unexpected module metadata: %+v", metadata)
+	kinds := map[string]string{}
+	for _, m := range modules {
+		kinds[m.ID] = m.ModuleKind
+		if len(m.SHA256) != 64 || m.ByteLength == 0 {
+			t.Fatalf("incomplete manifest entry: %+v", m)
+		}
+	}
+	want := map[string]string{"controller-relay": "relay", "crypto-core": "crypto", "proof-verifier": "verifier"}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("manifest modules = %v, want %v", kinds, want)
 	}
 }

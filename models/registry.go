@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/guiperry/knirv-sdk-go/models/frame"
 )
@@ -93,6 +94,236 @@ type HasherInferResult struct {
 	ValidPasses int     `json:"valid_passes"`
 	TotalPasses int     `json:"total_passes"`
 	LatencyMs   float64 `json:"latency_ms"`
+}
+
+// IndexSearchRequest is a tenant-scoped evidence lookup. Tenant is sent in the
+// daemon header rather than the request body so callers cannot accidentally
+// mix one tenant's private evidence into another tenant's result.
+type IndexSearchRequest struct {
+	Text              string `json:"text"`
+	Subject           string `json:"subject,omitempty"`
+	Property          string `json:"property,omitempty"`
+	Value             string `json:"value,omitempty"`
+	K                 int    `json:"k,omitempty"`
+	Mode              string `json:"mode,omitempty"` // index, flash, or hybrid
+	IncludeQuarantine bool   `json:"include_quarantine,omitempty"`
+	Tenant            string `json:"-"`
+}
+
+// IndexSearchHit mirrors one HASHER evidence span. Source and Revision are
+// retained because a factuality verdict must be reproducible from its spans.
+type IndexSearchHit struct {
+	SpanID    string   `json:"span_id"`
+	Snapshot  string   `json:"snapshot"`
+	Start     int      `json:"start"`
+	End       int      `json:"end"`
+	Text      string   `json:"text"`
+	Tier      string   `json:"source_tier"`
+	Title     string   `json:"title,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	License   string   `json:"license,omitempty"`
+	FetchedAt string   `json:"fetched_at,omitempty"`
+	Score     float64  `json:"score"`
+	Matched   []string `json:"matched,omitempty"`
+	Fact      bool     `json:"fact,omitempty"`
+	Source    string   `json:"source,omitempty"`
+	Revision  string   `json:"revision,omitempty"`
+}
+
+// IndexSearchResult is the stable wire result from /hasher/index/search.
+// Flash fields are present when a live-search capable daemon handled the
+// request; index-only daemons simply leave them at their zero values.
+type IndexSearchResult struct {
+	Hits            []IndexSearchHit `json:"hits"`
+	Retrieval       string           `json:"retrieval"`
+	IndexVersion    string           `json:"index_version"`
+	EmbedderID      string           `json:"embedder_id"`
+	FlashUsed       bool             `json:"flash_used"`
+	OutboundQueries []string         `json:"outbound_queries,omitempty"`
+	Degraded        bool             `json:"degraded"`
+	Stale           bool             `json:"stale"`
+}
+
+// OntologyConfig is the organization-owned ontology accepted by HASHER. The
+// daemon deliberately excludes TradeSecrets and UserData from its evidence
+// index; callers may still submit the complete onboarding object so the daemon
+// can apply that invariant itself.
+type OntologyConfig struct {
+	ID             string                `json:"id,omitempty"`
+	OrganizationID string                `json:"organization_id"`
+	Name           string                `json:"name,omitempty"`
+	Ontology       *OrganizationOntology `json:"ontology"`
+}
+
+// OrganizationOntology mirrors the daemon wire contract without importing the
+// daemon package. Maps are intentionally JSON values: stakeholder and decision
+// structures may be nested by an onboarding client.
+type OrganizationOntology struct {
+	TradeSecrets         []string          `json:"trade_secrets,omitempty"`
+	BusinessLogic        []string          `json:"business_logic,omitempty"`
+	UserData             []string          `json:"user_data,omitempty"`
+	Rules                []string          `json:"rules,omitempty"`
+	Regulations          []string          `json:"regulations,omitempty"`
+	Procedures           []string          `json:"procedures,omitempty"`
+	Policies             []string          `json:"policies,omitempty"`
+	FAQs                 []string          `json:"faqs,omitempty"`
+	CustomerService      []string          `json:"customer_service,omitempty"`
+	IndustryJargon       map[string]string `json:"industry_jargon,omitempty"`
+	StakeholderHierarchy map[string]any    `json:"stakeholder_hierarchy,omitempty"`
+	DecisionRights       map[string]any    `json:"decision_rights,omitempty"`
+	Aliases              map[string]string `json:"aliases,omitempty"`
+}
+
+// OntologySyncResult reports the immutable version selected after an operator
+// sync. NotIndexed explicitly documents categories the daemon refused to add.
+type OntologySyncResult struct {
+	Tenant     string   `json:"tenant"`
+	Version    string   `json:"ontology_version"`
+	Previous   string   `json:"previous_version,omitempty"`
+	Unchanged  bool     `json:"unchanged"`
+	Passages   int      `json:"passages"`
+	Facts      int      `json:"facts"`
+	NotIndexed []string `json:"not_indexed"`
+	Segment    string   `json:"segment,omitempty"`
+}
+
+// OntologyClaim is a structured claim for deterministic ontology comparison.
+type OntologyClaim struct {
+	Text     string `json:"text,omitempty"`
+	Subject  string `json:"subject"`
+	Property string `json:"property"`
+	Value    string `json:"value"`
+	Tenant   string `json:"-"`
+}
+
+// OntologyVerdict is the deterministic result from the caller's organization
+// ontology. Hits remain raw JSON-compatible evidence spans so clients retain
+// their source and snapshot provenance.
+type OntologyVerdict struct {
+	Outcome         string           `json:"outcome"`
+	Reason          string           `json:"reason"`
+	OntologyVersion string           `json:"ontology_version,omitempty"`
+	Stated          []string         `json:"ontology_values,omitempty"`
+	Hits            []IndexSearchHit `json:"hits,omitempty"`
+}
+
+// OntologyRemoveResult acknowledges retiring the current ontology revision.
+type OntologyRemoveResult struct {
+	Tenant string `json:"tenant"`
+	Status string `json:"status"`
+}
+
+// IndexSearch retrieves evidence from HASHER. It deliberately exposes only
+// the daemon's bounded query shape; verdict policy remains in the caller.
+func (c *Client) IndexSearch(ctx context.Context, req IndexSearchRequest) (*IndexSearchResult, error) {
+	if req.Text == "" {
+		return nil, errors.New("index search requires text")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode index search: %w", err)
+	}
+	headers := make(http.Header)
+	if req.Tenant != "" {
+		headers.Set("X-KNIRV-Tenant", req.Tenant)
+	}
+	res, err := c.Do(ctx, http.MethodPost, HasherPrefix+"/index/search", body, headers)
+	if err != nil {
+		return nil, fmt.Errorf("hasher index unavailable: %w", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("hasher index: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out IndexSearchResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("hasher index: malformed response: %w", err)
+	}
+	return &out, nil
+}
+
+// SyncOntology replaces an organization's active ontology revision. Operator
+// privilege is supplied in a header because it is transport authority, not
+// organization content.
+func (c *Client) SyncOntology(ctx context.Context, cfg OntologyConfig) (*OntologySyncResult, error) {
+	if cfg.OrganizationID == "" && cfg.ID == "" {
+		return nil, errors.New("ontology sync requires organization_id")
+	}
+	if cfg.Ontology == nil {
+		return nil, errors.New("ontology sync requires ontology")
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("encode ontology sync: %w", err)
+	}
+	res, err := c.Do(ctx, http.MethodPost, HasherPrefix+"/ontology/sync", body, http.Header{"X-KNIRV-Privilege": []string{"operator"}})
+	if err != nil {
+		return nil, fmt.Errorf("ontology sync unavailable: %w", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ontology sync: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out OntologySyncResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ontology sync: malformed response: %w", err)
+	}
+	return &out, nil
+}
+
+// RemoveOntology retires tenant's active ontology revision. It uses the same
+// operator header as SyncOntology and does not send a tenant in a JSON body.
+func (c *Client) RemoveOntology(ctx context.Context, tenant string) (*OntologyRemoveResult, error) {
+	if tenant == "" {
+		return nil, errors.New("ontology removal requires tenant")
+	}
+	path := HasherPrefix + "/ontology?tenant=" + url.QueryEscape(tenant)
+	res, err := c.Do(ctx, http.MethodDelete, path, nil, http.Header{"X-KNIRV-Privilege": []string{"operator"}})
+	if err != nil {
+		return nil, fmt.Errorf("ontology removal unavailable: %w", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ontology removal: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out OntologyRemoveResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ontology removal: malformed response: %w", err)
+	}
+	return &out, nil
+}
+
+// CheckOntology compares a structured claim with evidence visible only to its
+// tenant's active ontology.
+func (c *Client) CheckOntology(ctx context.Context, claim OntologyClaim) (*OntologyVerdict, error) {
+	if claim.Subject == "" || claim.Property == "" || claim.Value == "" {
+		return nil, errors.New("ontology check requires subject, property, and value")
+	}
+	body, err := json.Marshal(claim)
+	if err != nil {
+		return nil, fmt.Errorf("encode ontology check: %w", err)
+	}
+	headers := make(http.Header)
+	if claim.Tenant != "" {
+		headers.Set("X-KNIRV-Tenant", claim.Tenant)
+	}
+	res, err := c.Do(ctx, http.MethodPost, HasherPrefix+"/ontology/check", body, headers)
+	if err != nil {
+		return nil, fmt.Errorf("ontology check unavailable: %w", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ontology check: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out OntologyVerdict
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ontology check: malformed response: %w", err)
+	}
+	return &out, nil
 }
 
 // HasherStatus describes the HASHER model without running it.

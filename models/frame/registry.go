@@ -8,9 +8,9 @@ package frame
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Tier is a tool's privilege class (three_layer_inference.md §3.4).
@@ -63,40 +63,26 @@ type Stage struct {
 type Registry struct {
 	stages map[string]Stage
 	tools  map[string]Tool
+	wire   wireRegistry // what the core is given with each call, in registration order
+	skills sync.Map     // "skill.<bundle>" id -> Stage, resolved by the core
 }
 
-// NewRegistry validates and indexes stages and tools. A tool of tier T3, a
-// duplicate id, or a stage that names an unknown tool is an error: the
+// NewRegistry validates (in the core) and indexes stages and tools. A tool of
+// tier T3, a duplicate id, or a stage that names an unknown tool is an error: the
 // registry is the single source the manifest is generated from.
 func NewRegistry(stages []Stage, tools []Tool) (*Registry, error) {
-	r := &Registry{stages: map[string]Stage{}, tools: map[string]Tool{}}
+	wire := wireRegistry{Stages: stages, Tools: tools}
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := core("frame.validate", map[string]any{"registry": wire}, &out); err != nil {
+		return nil, err
+	}
+	r := &Registry{stages: map[string]Stage{}, tools: map[string]Tool{}, wire: wire}
 	for _, t := range tools {
-		if t.Name == "" {
-			return nil, fmt.Errorf("frame: tool with empty name")
-		}
-		if t.Tier >= T3Never || t.Tier < T0Read {
-			return nil, fmt.Errorf("frame: tool %q has tier %d; tier %d and above is never exposed", t.Name, t.Tier, T3Never)
-		}
-		if _, dup := r.tools[t.Name]; dup {
-			return nil, fmt.Errorf("frame: duplicate tool %q", t.Name)
-		}
 		r.tools[t.Name] = t
 	}
 	for _, s := range stages {
-		if s.ID == "" || s.Role == "" {
-			return nil, fmt.Errorf("frame: stage %q needs an id and a role", s.ID)
-		}
-		if _, dup := r.stages[s.ID]; dup {
-			return nil, fmt.Errorf("frame: duplicate stage %q", s.ID)
-		}
-		for _, name := range s.Tools {
-			if _, ok := r.tools[name]; !ok {
-				return nil, fmt.Errorf("frame: stage %q allows unknown tool %q", s.ID, name)
-			}
-		}
-		if len(s.OutputSchema) > 0 && !json.Valid(s.OutputSchema) {
-			return nil, fmt.Errorf("frame: stage %q has an invalid output schema", s.ID)
-		}
 		r.stages[s.ID] = s
 	}
 	return r, nil
@@ -111,22 +97,31 @@ const (
 )
 
 // Stage returns a registered stage, or the skill template instantiated for a
-// "skill.<bundle>" id.
+// "skill.<bundle>" id (resolved by the core).
 func (r *Registry) Stage(id string) (Stage, bool) {
 	if s, ok := r.stages[id]; ok && id != SkillTemplateID {
 		return s, true
 	}
-	if bundle, ok := strings.CutPrefix(id, SkillPrefix); ok && bundle != "" {
-		if bundle == "*" {
-			bundle = "<bundle>"
-		}
-		if t, ok := r.stages[SkillTemplateID]; ok {
-			t.ID = id
-			t.Role = strings.ReplaceAll(t.Role, "{bundle}", bundle)
-			return t, true
-		}
+	if !strings.HasPrefix(id, SkillPrefix) {
+		return Stage{}, false
 	}
-	return Stage{}, false
+	if cached, ok := r.skills.Load(id); ok {
+		s, found := cached.(*Stage)
+		return derefStage(s), found && s != nil
+	}
+	var out struct {
+		Stage *Stage `json:"stage"`
+	}
+	mustCore("frame.stage", r.request(map[string]any{"id": id}), &out)
+	r.skills.Store(id, out.Stage)
+	return derefStage(out.Stage), out.Stage != nil
+}
+
+func derefStage(s *Stage) Stage {
+	if s == nil {
+		return Stage{}
+	}
+	return *s
 }
 
 // Tool returns a registered tool.

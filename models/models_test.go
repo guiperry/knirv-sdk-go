@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,22 @@ func TestEncodeByteV1Vectors(t *testing.T) {
 	}
 }
 
+func TestEncodeChoiceSetV1SharedVector(t *testing.T) {
+	var v struct {
+		SetPrompt struct {
+			Question string   `json:"question"`
+			State    string   `json:"state"`
+			Choices  []string `json:"choices"`
+			Width    int      `json:"width"`
+			Tokens   []uint32 `json:"tokens"`
+		} `json:"set_prompt"`
+	}
+	load(t, "prompt_vector.json", &v)
+	if got := EncodeChoiceSetV1(v.SetPrompt.Question, v.SetPrompt.State, v.SetPrompt.Choices, v.SetPrompt.Width); !slices.Equal(got, v.SetPrompt.Tokens) {
+		t.Fatalf("choice-set tokens = %v, want %v", got, v.SetPrompt.Tokens)
+	}
+}
+
 func TestAdviceCases(t *testing.T) {
 	var cases []struct {
 		Name      string        `json:"name"`
@@ -123,6 +140,78 @@ func TestWireRoundTrip(t *testing.T) {
 	load(t, "head_manifest.json", &m)
 	if w, err := m.InputWidth(); err != nil || w != 39 || m.DatasetManifestHash() != "dm" {
 		t.Fatalf("width=%d err=%v hash=%q", w, err, m.DatasetManifestHash())
+	}
+}
+
+func TestIndexSearchVectorDecodes(t *testing.T) {
+	var vector struct {
+		Request  IndexSearchRequest `json:"request"`
+		Response IndexSearchResult  `json:"response"`
+	}
+	load(t, "index_search.json", &vector)
+	if vector.Request.Text == "" || vector.Response.IndexVersion == "" {
+		t.Fatalf("incomplete index-search vector: %+v", vector)
+	}
+	if len(vector.Response.Hits) != 1 || vector.Response.Hits[0].Source != "fixture" || vector.Response.Hits[0].Revision != "r1" {
+		t.Fatalf("provenance was not decoded: %+v", vector.Response.Hits)
+	}
+}
+
+func TestOntologyVectorsDecode(t *testing.T) {
+	var syncVector struct {
+		Request  OntologyConfig     `json:"request"`
+		Response OntologySyncResult `json:"response"`
+	}
+	load(t, "ontology_sync.json", &syncVector)
+	if syncVector.Request.Ontology == nil || syncVector.Request.OrganizationID != "acme" || syncVector.Response.Version == "" || len(syncVector.Response.NotIndexed) != 2 {
+		t.Fatalf("ontology sync vector incomplete: %+v", syncVector)
+	}
+	var checkVector struct {
+		Request        OntologyClaim        `json:"request"`
+		Response       OntologyVerdict      `json:"response"`
+		RemoveResponse OntologyRemoveResult `json:"remove_response"`
+	}
+	load(t, "ontology_check.json", &checkVector)
+	if checkVector.Request.Subject != "decision rights" || checkVector.Response.Outcome != "supported" || len(checkVector.Response.Hits) != 1 || checkVector.RemoveResponse.Status != "removed" {
+		t.Fatalf("ontology check vector incomplete: %+v", checkVector)
+	}
+}
+
+func TestOntologyClientRoutesAndHeaders(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(HasherPrefix+"/ontology/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("X-KNIRV-Privilege") != "operator" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OntologySyncResult{Tenant: "acme", Version: "ont1:test", NotIndexed: []string{"trade_secrets", "user_data"}})
+	})
+	mux.HandleFunc(HasherPrefix+"/ontology", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.Header.Get("X-KNIRV-Privilege") != "operator" || r.URL.Query().Get("tenant") != "acme" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OntologyRemoveResult{Tenant: "acme", Status: "removed"})
+	})
+	mux.HandleFunc(HasherPrefix+"/ontology/check", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("X-KNIRV-Tenant") != "acme" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OntologyVerdict{Outcome: "supported", Reason: "fixture"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewClient(srv.URL, nil)
+	cfg := OntologyConfig{OrganizationID: "acme", Ontology: &OrganizationOntology{Rules: []string{"owner supplied"}}}
+	if out, err := c.SyncOntology(context.Background(), cfg); err != nil || out.Version != "ont1:test" {
+		t.Fatalf("sync: %+v %v", out, err)
+	}
+	if out, err := c.CheckOntology(context.Background(), OntologyClaim{Tenant: "acme", Subject: "s", Property: "p", Value: "v"}); err != nil || out.Outcome != "supported" {
+		t.Fatalf("check: %+v %v", out, err)
+	}
+	if out, err := c.RemoveOntology(context.Background(), "acme"); err != nil || out.Status != "removed" {
+		t.Fatalf("remove: %+v %v", out, err)
 	}
 }
 

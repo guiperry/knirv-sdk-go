@@ -1,23 +1,44 @@
-// Package knirv provides an idiomatic Go SDK backed by the KNIRV Rust core.
+// Package knirv is the Go binding for the KNIRV Rust core. The core is compiled
+// to WebAssembly and runs in-process under wazero (see internal/core): there is
+// no CGO and no native library, so the package builds and cross-compiles with
+// any Go toolchain.
 package knirv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
-	pb "github.com/guiperry/knirv-sdk-go/gen/proto"
-	"github.com/guiperry/knirv-sdk-go/internal/ffi"
-	"google.golang.org/protobuf/proto"
+	"github.com/guiperry/knirv-sdk-go/internal/core"
 )
 
-// Client is safe to reuse concurrently. Native memory management remains in
-// the private ffi package; callers use only Go values.
+// bindingAPIVersion is the binding envelope version the core speaks.
+const bindingAPIVersion = 1
+
+// Client is safe to reuse concurrently: calls are spread over a small pool of
+// core instances.
 type Client struct{}
 
 func NewClient() *Client { return &Client{} }
 
-// Execute sends an action and its JSON payload to the Rust binding core. It
-// returns the operation payload as Go-owned bytes.
+type requestEnvelope struct {
+	Version   int             `json:"version"`
+	Operation string          `json:"operation"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+type responseEnvelope struct {
+	Payload json.RawMessage `json:"payload"`
+	Error   *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// Execute runs one operation of the Rust core's local binding surface (signing,
+// addresses, envelopes, relay and WASM payloads, URIs, authority records, key
+// files, the embedded module registry). It returns the operation's JSON payload
+// as Go-owned bytes. Operations that need the network are not available here:
+// they answer with a *NativeError saying so.
 func (c *Client) Execute(ctx context.Context, action string, payload []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -25,22 +46,35 @@ func (c *Client) Execute(ctx context.Context, action string, payload []byte) ([]
 	if action == "" {
 		return nil, fmt.Errorf("KNIRV action is required")
 	}
-
-	request, err := proto.Marshal(&pb.SdkRequest{Action: action, Payload: payload})
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("KNIRV payload for %s is not valid JSON", action)
+	}
+	request, err := json.Marshal(requestEnvelope{Version: bindingAPIVersion, Operation: action, Payload: payload})
 	if err != nil {
 		return nil, fmt.Errorf("marshal KNIRV request: %w", err)
 	}
-	responseBytes, err := ffi.InvokeProto(request)
+
+	runner, err := core.Default()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := runner.Invoke(ctx, request)
 	if err != nil {
 		return nil, err
 	}
 
-	var response pb.SdkResponse
-	if err := proto.Unmarshal(responseBytes, &response); err != nil {
+	var response responseEnvelope
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("unmarshal KNIRV response: %w", err)
 	}
-	if !response.Success {
-		return nil, &NativeError{Message: response.ErrorMessage}
+	if response.Error != nil {
+		return nil, &NativeError{Message: response.Error.Message}
 	}
-	return append([]byte(nil), response.Data...), nil
+	if len(response.Payload) == 0 {
+		return []byte("null"), nil
+	}
+	return append([]byte(nil), response.Payload...), nil
 }

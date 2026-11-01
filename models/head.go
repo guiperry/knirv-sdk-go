@@ -48,16 +48,18 @@ func (r *Reasoning) Decision(name string) *Decision {
 
 // PlanText decodes the plan (byte-v1: bytes up to the first EOS; specials dropped).
 func (r *Reasoning) PlanText() string {
-	var out []byte
-	for _, t := range r.PlanTokens {
-		if t == ByteV1EOS {
-			break
-		}
-		if t < 256 {
-			out = append(out, byte(t))
-		}
+	var out struct {
+		Bytes []byte `json:"bytes_base64"` // encoding/json decodes base64 into []byte
 	}
-	return string(out)
+	mustCore("models.plan_text", map[string]any{"plan_tokens": nonNilTokens(r.PlanTokens)}, &out)
+	return string(out.Bytes)
+}
+
+func nonNilTokens(t []uint32) []uint32 {
+	if t == nil {
+		return []uint32{}
+	}
+	return t
 }
 
 // Manifest is what clients fetch before downloading weights.
@@ -70,8 +72,6 @@ type Manifest struct {
 }
 
 type manifestConfig struct {
-	MaxSeqLen           int    `json:"max_seq_len"`
-	SummarySlots        int    `json:"summary_slots"`
 	DatasetManifestHash string `json:"dataset_manifest_hash"`
 }
 
@@ -84,16 +84,15 @@ func (m *Manifest) cfg() (manifestConfig, error) {
 }
 
 // InputWidth is the number of byte-v1 tokens the model takes (its sequence
-// length minus the summary slots).
+// length minus the summary slots), as the core computes it.
 func (m *Manifest) InputWidth() (int, error) {
-	c, err := m.cfg()
-	if err != nil {
+	var out struct {
+		Width int `json:"width"`
+	}
+	if err := core("models.input_width", map[string]any{"config": m.Config}, &out); err != nil {
 		return 0, err
 	}
-	if c.MaxSeqLen <= c.SummarySlots {
-		return 0, fmt.Errorf("model config has no input room")
-	}
-	return c.MaxSeqLen - c.SummarySlots, nil
+	return out.Width, nil
 }
 
 // DatasetManifestHash is the hash of the dataset manifest the model was trained on.
@@ -104,23 +103,30 @@ func (m *Manifest) DatasetManifestHash() string {
 
 // byte-v1 layout, identical to knirv_head::tokenizer and ARENA's headTokenizer.ts.
 const (
-	ByteV1EOS uint32 = 259
-	ByteV1PAD uint32 = 256
-	ByteV1BOS uint32 = 257
+	ByteV1EOS     uint32 = 259
+	ByteV1PAD     uint32 = 256
+	ByteV1BOS     uint32 = 257
+	ByteV1SEP     uint32 = 258
+	ByteV1OPTOpen uint32 = 260
+	ByteV1OPTEnd  uint32 = 261
+	ByteV1Vocab   uint32 = 262
 )
 
 // EncodeByteV1 is BOS + the text's bytes, truncated or PAD-filled to width.
 func EncodeByteV1(text string, width int) []uint32 {
-	toks := make([]uint32, 0, width)
-	toks = append(toks, ByteV1BOS)
-	for _, b := range []byte(text) {
-		if len(toks) == width {
-			break
-		}
-		toks = append(toks, uint32(b))
+	var out struct {
+		Tokens []uint32 `json:"tokens"`
 	}
-	for len(toks) < width {
-		toks = append(toks, ByteV1PAD)
+	mustCore("models.encode_byte_v1", map[string]any{"text": text, "width": width}, &out)
+	return out.Tokens
+}
+
+// EncodeChoiceSetV1 builds the leakage-safe set-head input after HEAD's
+// model-owned summary slot: BOS question SEP state SEP (OPT_OPEN choice OPT_END)*.
+func EncodeChoiceSetV1(question, state string, choices []string, width int) []uint32 {
+	var out struct {
+		Tokens []uint32 `json:"tokens"`
 	}
-	return toks
+	mustCore("models.encode_choice_set_v1", map[string]any{"question": question, "state": state, "choices": choices, "width": width}, &out)
+	return out.Tokens
 }

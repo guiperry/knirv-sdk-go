@@ -1,9 +1,6 @@
 package models
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // StatusPath is the backend's authenticated route for the platform-wide model view:
 // the daemon registry, llama and its adapters, and the reasoning harness's recent
@@ -96,75 +93,15 @@ type RoleLine struct {
 	Detail  string `json:"detail,omitempty"`
 }
 
-func sha12(s string) string {
-	if len(s) > 12 {
-		return s[:12]
-	}
-	return s
-}
-
-// Roles turns a status document into the fixed list of role lines, in a fixed order.
-// Anything the document does not mention is reported as unavailable, never omitted.
+// Roles turns a status document into the fixed list of role lines, in a fixed
+// order (computed by the core). Anything the document does not mention is
+// reported as unavailable, never omitted.
 func (s PlatformStatus) Roles() []RoleLine {
-	byName := map[string]ModelStatus{}
-	for _, m := range s.Daemon {
-		byName[m.Name] = m
+	var out struct {
+		Roles []RoleLine `json:"roles"`
 	}
-	daemon := func(role, label, name string) RoleLine {
-		l := RoleLine{Role: role, Label: label, Model: name}
-		m, ok := byName[name]
-		switch {
-		case !ok && s.DaemonError != "":
-			l.State, l.Detail = "unavailable", s.DaemonError
-		case !ok:
-			l.State, l.Detail = "unavailable", "not served by the models daemon"
-		case m.Ready:
-			l.State, l.Version = "ready", m.Version
-		case !m.Loaded && m.Error == "":
-			l.State, l.Version, l.Detail = "idle", m.Version, "not built yet; built on first use"
-		default:
-			l.State, l.Version, l.Detail = "not ready", m.Version, m.Error
-			if l.Detail == "" {
-				l.Detail = "not trained yet"
-			}
-		}
-		return l
-	}
-	llama := RoleLine{Role: "server_tasks", Label: "server tasks and skills", Model: "llama", State: "unavailable", Detail: "llama is not running"}
-	if s.Llama != nil {
-		llama.State, llama.Detail = "not ready", s.Llama.Error
-		if s.Llama.Ready {
-			llama.State, llama.Detail = "ready", ""
-			if s.Llama.BaseSHA256 != "" {
-				llama.Version = "gguf-" + sha12(s.Llama.BaseSHA256)
-			}
-			var loaded []string
-			for _, a := range s.Llama.Adapters {
-				if a.Loaded {
-					loaded = append(loaded, a.Name)
-				}
-			}
-			if len(loaded) > 0 {
-				llama.Detail = "adapters: " + strings.Join(loaded, ", ")
-			} else {
-				llama.Detail = "no skill adapter loaded"
-			}
-		} else if llama.Detail == "" {
-			llama.Detail = "starting"
-		}
-	}
-	ext := RoleLine{Role: "external", Label: "fallback and planning", Model: "external", State: "ready", Version: "provider-chain",
-		Detail: "chosen per request; the only model that leaves this machine"}
-	if st, ok := s.Stats["external"]; ok && st.Circuit != "" && st.Circuit != "closed" {
-		ext.State, ext.Detail = "not ready", "circuit "+st.Circuit+": "+st.LastError
-	}
-	return []RoleLine{
-		daemon("decide", "supervision decisions", "head"),
-		daemon("generate", "text generation", "heart"),
-		daemon("validate", "validation", "hasher"),
-		llama,
-		ext,
-	}
+	mustCore("models.platform_roles", map[string]any{"status": s}, &out)
+	return out.Roles
 }
 
 // String renders a RoleLine as one aligned-free line, shared by every text consumer.

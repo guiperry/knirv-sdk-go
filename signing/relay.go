@@ -1,14 +1,7 @@
 package signing
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
-	"strings"
-	"time"
-
-	"google.golang.org/protobuf/encoding/protowire"
-)
+// Relay envelopes: types here, canonical encoding/validation in the Rust core
+// (core/src/signing.rs) via the "relay.*" binding operations.
 
 // RelayEnvelopeSchemaVersion is knirv.controller.relay-envelope.v1 (plan
 // section 8, Phase 8 task 2). It is the opaque canonical payload signed with
@@ -41,118 +34,6 @@ type RelayEnvelope struct {
 	PayloadDigest string // sha256:<hex> of the opaque relay message payload
 }
 
-func normalizeRelayEnvelope(e RelayEnvelope) (RelayEnvelope, error) {
-	if e.SchemaVersion == "" {
-		e.SchemaVersion = RelayEnvelopeSchemaVersion
-	}
-	if e.SchemaVersion != RelayEnvelopeSchemaVersion {
-		return RelayEnvelope{}, errors.New("unsupported relay envelope schema")
-	}
-	if strings.TrimSpace(e.RequestID) == "" || strings.TrimSpace(e.UserSubject) == "" || strings.TrimSpace(e.DeviceID) == "" {
-		return RelayEnvelope{}, errors.New("request_id, user_subject, and device_id are required")
-	}
-	if e.TargetType != RelayTargetDveExpertAdvisor && e.TargetType != RelayTargetCliSupervisor {
-		return RelayEnvelope{}, errors.New("target_type must be dve_expert_advisor or cli_supervisor")
-	}
-	if strings.TrimSpace(e.TargetID) == "" || strings.TrimSpace(e.Capability) == "" {
-		return RelayEnvelope{}, errors.New("target_id and capability are required")
-	}
-	if e.Sequence == 0 {
-		return RelayEnvelope{}, errors.New("sequence must be a positive monotonic counter")
-	}
-	if e.IssuedAtUnix <= 0 || e.ExpiresAtUnix <= e.IssuedAtUnix {
-		return RelayEnvelope{}, errors.New("valid issued_at and expires_at are required")
-	}
-	if strings.TrimSpace(e.PayloadDigest) == "" {
-		return RelayEnvelope{}, errors.New("payload_digest is required")
-	}
-	return e, nil
-}
-
-func MarshalRelayEnvelope(e RelayEnvelope) ([]byte, error) {
-	e, err := normalizeRelayEnvelope(e)
-	if err != nil {
-		return nil, err
-	}
-	var out []byte
-	out = appendString(out, 1, e.SchemaVersion)
-	out = appendString(out, 2, e.RequestID)
-	out = appendString(out, 3, e.UserSubject)
-	out = appendString(out, 4, e.DeviceID)
-	out = appendString(out, 5, e.DveID)
-	out = appendString(out, 6, e.TargetType)
-	out = appendString(out, 7, e.TargetID)
-	out = appendString(out, 8, e.Capability)
-	out = appendUint64(out, 9, e.Sequence)
-	out = appendUint64(out, 10, e.LeaseEpoch)
-	out = appendInt64(out, 11, e.IssuedAtUnix)
-	out = appendInt64(out, 12, e.ExpiresAtUnix)
-	out = appendString(out, 13, e.PayloadDigest)
-	return out, nil
-}
-
-func ParseRelayEnvelope(data []byte) (RelayEnvelope, error) {
-	var out RelayEnvelope
-	for len(data) > 0 {
-		number, typ, n := protowire.ConsumeTag(data)
-		if n < 0 {
-			return RelayEnvelope{}, protowire.ParseError(n)
-		}
-		data = data[n:]
-		switch typ {
-		case protowire.BytesType:
-			value, m := protowire.ConsumeBytes(data)
-			if m < 0 {
-				return RelayEnvelope{}, protowire.ParseError(m)
-			}
-			data = data[m:]
-			switch number {
-			case 1:
-				out.SchemaVersion = string(value)
-			case 2:
-				out.RequestID = string(value)
-			case 3:
-				out.UserSubject = string(value)
-			case 4:
-				out.DeviceID = string(value)
-			case 5:
-				out.DveID = string(value)
-			case 6:
-				out.TargetType = string(value)
-			case 7:
-				out.TargetID = string(value)
-			case 8:
-				out.Capability = string(value)
-			case 13:
-				out.PayloadDigest = string(value)
-			}
-		case protowire.VarintType:
-			value, m := protowire.ConsumeVarint(data)
-			if m < 0 {
-				return RelayEnvelope{}, protowire.ParseError(m)
-			}
-			data = data[m:]
-			switch number {
-			case 9:
-				out.Sequence = value
-			case 10:
-				out.LeaseEpoch = value
-			case 11:
-				out.IssuedAtUnix = int64(value)
-			case 12:
-				out.ExpiresAtUnix = int64(value)
-			}
-		default:
-			m := protowire.ConsumeFieldValue(number, typ, data)
-			if m < 0 {
-				return RelayEnvelope{}, protowire.ParseError(m)
-			}
-			data = data[m:]
-		}
-	}
-	return normalizeRelayEnvelope(out)
-}
-
 // CLISupervisorRelayParams holds the parameters for creating a CLI supervisor relay envelope.
 type CLISupervisorRelayParams struct {
 	RequestID   string
@@ -166,43 +47,92 @@ type CLISupervisorRelayParams struct {
 	TTLSeconds  int64
 }
 
-// NewCLISupervisorRelay creates a RelayEnvelope for a CLI supervisor target.
-func NewCLISupervisorRelay(params CLISupervisorRelayParams) (RelayEnvelope, error) {
-	now := time.Now().Unix()
-	expiresAt := now + params.TTLSeconds
-	if expiresAt <= now {
-		expiresAt = now + 60
-	}
-	e := RelayEnvelope{
-		SchemaVersion: RelayEnvelopeSchemaVersion,
-		RequestID:     params.RequestID,
-		UserSubject:   params.UserSubject,
-		DeviceID:      params.DeviceID,
-		TargetType:    RelayTargetCliSupervisor,
-		TargetID:      params.TargetID,
-		Capability:    params.Capability,
-		Sequence:      params.Sequence,
-		LeaseEpoch:    params.LeaseEpoch,
-		IssuedAtUnix:  now,
-		ExpiresAtUnix: expiresAt,
-	}
-	if params.Payload != nil {
-		digest := sha256.Sum256(params.Payload)
-		e.PayloadDigest = "sha256:" + hex.EncodeToString(digest[:])
-	}
-	return normalizeRelayEnvelope(e)
+type wireRelay struct {
+	SchemaVersion string  `json:"schema_version"`
+	RequestID     string  `json:"request_id"`
+	UserSubject   string  `json:"user_subject"`
+	DeviceID      string  `json:"device_id"`
+	DveID         *string `json:"dve_id"`
+	TargetType    string  `json:"target_type"`
+	TargetID      string  `json:"target_id"`
+	Capability    string  `json:"capability"`
+	Sequence      uint64  `json:"sequence"`
+	LeaseEpoch    *uint64 `json:"lease_epoch"`
+	IssuedAtUnix  int64   `json:"issued_at_unix"`
+	ExpiresAtUnix int64   `json:"expires_at_unix"`
+	PayloadDigest string  `json:"payload_digest"`
 }
 
-// SignCLISupervisorRelayResponse signs a relay envelope as a MessageEnvelope with relay-response purpose.
+func (e RelayEnvelope) wire() wireRelay {
+	w := wireRelay{
+		SchemaVersion: e.SchemaVersion, RequestID: e.RequestID, UserSubject: e.UserSubject, DeviceID: e.DeviceID,
+		TargetType: e.TargetType, TargetID: e.TargetID, Capability: e.Capability, Sequence: e.Sequence,
+		IssuedAtUnix: e.IssuedAtUnix, ExpiresAtUnix: e.ExpiresAtUnix, PayloadDigest: e.PayloadDigest,
+	}
+	if e.DveID != "" {
+		w.DveID = &e.DveID
+	}
+	if e.LeaseEpoch != 0 {
+		w.LeaseEpoch = &e.LeaseEpoch
+	}
+	return w
+}
+
+func (w wireRelay) envelope() RelayEnvelope {
+	e := RelayEnvelope{
+		SchemaVersion: w.SchemaVersion, RequestID: w.RequestID, UserSubject: w.UserSubject, DeviceID: w.DeviceID,
+		TargetType: w.TargetType, TargetID: w.TargetID, Capability: w.Capability, Sequence: w.Sequence,
+		IssuedAtUnix: w.IssuedAtUnix, ExpiresAtUnix: w.ExpiresAtUnix, PayloadDigest: w.PayloadDigest,
+	}
+	if w.DveID != nil {
+		e.DveID = *w.DveID
+	}
+	if w.LeaseEpoch != nil {
+		e.LeaseEpoch = *w.LeaseEpoch
+	}
+	return e
+}
+
+// MarshalRelayEnvelope validates and canonically encodes e.
+func MarshalRelayEnvelope(e RelayEnvelope) ([]byte, error) {
+	var out bytesReply
+	if err := call("relay.marshal", e.wire(), &out); err != nil {
+		return nil, err
+	}
+	return out.decode()
+}
+
+// ParseRelayEnvelope decodes and validates canonical relay-envelope bytes.
+func ParseRelayEnvelope(data []byte) (RelayEnvelope, error) {
+	var out wireRelay
+	if err := call("relay.parse", map[string]string{"bytes_base64": b64(data)}, &out); err != nil {
+		return RelayEnvelope{}, err
+	}
+	return out.envelope(), nil
+}
+
+// NewCLISupervisorRelay creates a RelayEnvelope for a CLI supervisor target.
+func NewCLISupervisorRelay(params CLISupervisorRelayParams) (RelayEnvelope, error) {
+	var out wireRelay
+	if err := call("relay.new_cli_supervisor", map[string]any{
+		"request_id": params.RequestID, "user_subject": params.UserSubject, "device_id": params.DeviceID,
+		"target_id": params.TargetID, "capability": params.Capability, "sequence": params.Sequence,
+		"lease_epoch": params.LeaseEpoch, "payload": ints(append([]byte{}, params.Payload...)),
+		"ttl_seconds": params.TTLSeconds,
+	}, &out); err != nil {
+		return RelayEnvelope{}, err
+	}
+	return out.envelope(), nil
+}
+
+// SignCLISupervisorRelayResponse signs a relay envelope as a MessageEnvelope
+// with relay-response purpose.
 func SignCLISupervisorRelayResponse(privateKey []byte, envelope RelayEnvelope, chainID string) (SignedMessage, error) {
-	return SignMessage(privateKey, MessageEnvelope{
-		SchemaVersion: MessageSchemaVersion,
-		Domain:        ControllerDomain,
-		Purpose:       PurposeRelayResponse,
-		ChainID:       chainID,
-		Nonce:         envelope.RequestID,
-		IssuedAtUnix:  envelope.IssuedAtUnix,
-		ExpiresAtUnix: envelope.ExpiresAtUnix,
-		Payload:       []byte{},
-	})
+	var out wireSignedMessage
+	if err := call("relay.sign_cli_supervisor_response", map[string]any{
+		"private_key_base64": b64(privateKey), "envelope": envelope.wire(), "chain_id": chainID,
+	}, &out); err != nil {
+		return SignedMessage{}, err
+	}
+	return out.message()
 }

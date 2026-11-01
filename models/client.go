@@ -55,9 +55,9 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte, hdr h
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	for _, k := range []string{"Range", "If-None-Match"} {
-		if v := hdr.Get(k); v != "" {
-			req.Header.Set(k, v)
+	for k, values := range hdr {
+		for _, value := range values {
+			req.Header.Add(k, value)
 		}
 	}
 	return c.hc.Do(req)
@@ -126,7 +126,13 @@ func (c *Client) Reason(ctx context.Context, tokens []uint32) (*Reasoning, error
 
 // Advise is the whole supervisor-advice path: manifest → encode → reason →
 // advice. Every failure is an abstention, never an error.
-func (c *Client) Advise(ctx context.Context, ac AdviseContext) SupervisorAdvice {
+func (c *Client) Advise(ctx context.Context, ac AdviseContext) (advice SupervisorAdvice) {
+	// If the SDK core cannot run, the pure helpers panic; abstaining is the safe answer.
+	defer func() {
+		if recover() != nil {
+			advice = SupervisorAdvice{Abstain: true, AbstainReason: "SDK core unavailable", ModelVersion: "none", ReceivedAt: now()}
+		}
+	}()
 	m, err := c.Manifest(ctx)
 	if err != nil {
 		return AbstainAdvice("no HEAD model available", "none", "")
