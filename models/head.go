@@ -46,6 +46,34 @@ func (r *Reasoning) Decision(name string) *Decision {
 	return nil
 }
 
+// DecisionEnvelope carries the decision-core output so it can be supplied by the
+// caller or surfaced by HEART. Mirrors the Rust core `DecisionEnvelope`.
+type DecisionEnvelope struct {
+	Decisions []Decision `json:"decisions,omitempty"`
+	Abstained bool       `json:"abstained,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+}
+
+// HeartGenerateRequest is the decision-aware /models/heart/generate body. Plain
+// generation (no Decision and WithDecision=false) never consults the decision
+// core, so legacy clients keep working when the core is unavailable.
+type HeartGenerateRequest struct {
+	Prompt       string            `json:"prompt"`
+	Decision     *DecisionEnvelope `json:"decision,omitempty"`
+	WithDecision bool              `json:"with_decision,omitempty"`
+}
+
+// HeartGenerateResponse always carries the (possibly absent or abstaining)
+// decision metadata alongside the text.
+type HeartGenerateResponse struct {
+	Text      string            `json:"text,omitempty"`
+	Ready     bool              `json:"ready"`
+	Progress  float64           `json:"progress"`
+	Decision  *DecisionEnvelope `json:"decision,omitempty"`
+	Abstained bool              `json:"abstained,omitempty"`
+	Error     string            `json:"error,omitempty"`
+}
+
 // PlanText decodes the plan (byte-v1: bytes up to the first EOS; specials dropped).
 func (r *Reasoning) PlanText() string {
 	var out struct {

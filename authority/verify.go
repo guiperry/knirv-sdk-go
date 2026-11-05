@@ -16,6 +16,9 @@ var (
 	ErrTarget           = errors.New("authority target does not match tier")
 	ErrScope            = errors.New("authority scope is not covered")
 	ErrTier             = errors.New("authority tier is not allowed")
+	// ErrInvalid is a malformed input (bad key length, empty field, unknown
+	// entropy mode), as opposed to a well-formed record that fails a check.
+	ErrInvalid = errors.New("invalid authority input")
 )
 
 // OperatorKind distinguishes root servers from boot nodes.
@@ -33,7 +36,9 @@ type Operator struct {
 	LongTermPub []byte       `json:"long_term_pub"`
 	Scopes      []string     `json:"scopes"`
 	// RetiredSessions maps hex(session_pub) to the unix time of retirement.
-	// A session may only sign records issued at or before that time.
+	// A certificate that starts after that time is rejected. A record carries no
+	// authenticated issue time, so retirement does not stop a retired key from
+	// signing within a certificate that started earlier (AUTHORITY_SPEC section 10, D1).
 	RetiredSessions map[string]int64 `json:"retired_sessions,omitempty"`
 }
 

@@ -82,10 +82,24 @@ func (c *Client) getJSON(ctx context.Context, path string, into any) error {
 	return nil
 }
 
-// Manifest fetches the promoted model's manifest.
+// Manifest fetches the HEAD VLM model's manifest (vision / mirrored text). It is a
+// narrow, VLM-specific contract and does NOT carry the decision input width; callers
+// that want to run supervisor advice must use DecisionManifest instead.
 func (c *Client) Manifest(ctx context.Context) (*Manifest, error) {
 	var m Manifest
 	if err := c.getJSON(ctx, HeadPrefix+"/models", &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// DecisionManifest fetches the HEART decision core's manifest (the promoted decision
+// model's width/summary config). This is the manifest Advise needs: after the
+// migration the decision manifest lives at /models/heart/decide/models, not at the
+// HEAD VLM manifest route.
+func (c *Client) DecisionManifest(ctx context.Context) (*Manifest, error) {
+	var m Manifest
+	if err := c.getJSON(ctx, HeartDecisionPrefix+"/models", &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -101,13 +115,13 @@ func (c *Client) Matrix(ctx context.Context, version, name string) ([][]float64,
 	return m, nil
 }
 
-// Reason takes already-encoded byte-v1 tokens at the model's fixed width. The
-// model advises; callers keep every enforcement decision.
-func (c *Client) Reason(ctx context.Context, tokens []uint32) (*Reasoning, error) {
+// Decide is the decision core, served by HEART at /models/heart/decide. It is the
+// former HEAD model (now part of HEART); callers that want the migrated route use this.
+func (c *Client) Decide(ctx context.Context, tokens []uint32) (*Reasoning, error) {
 	body, _ := json.Marshal(map[string]any{"tokens": tokens})
-	res, err := c.Do(ctx, http.MethodPost, HeadPrefix+"/reason", body, http.Header{})
+	res, err := c.Do(ctx, http.MethodPost, HeartDecisionPrefix+"/reason", body, http.Header{})
 	if err != nil {
-		return nil, fmt.Errorf("head unavailable: %w", err)
+		return nil, fmt.Errorf("heart decision unavailable: %w", err)
 	}
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
@@ -115,11 +129,11 @@ func (c *Client) Reason(ctx context.Context, tokens []uint32) (*Reasoning, error
 		return nil, ErrNoModel
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("head: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+		return nil, fmt.Errorf("heart decision: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
 	}
 	var out Reasoning
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("head: malformed response: %w", err)
+		return nil, fmt.Errorf("heart decision: malformed response: %w", err)
 	}
 	return &out, nil
 }
@@ -133,20 +147,20 @@ func (c *Client) Advise(ctx context.Context, ac AdviseContext) (advice Superviso
 			advice = SupervisorAdvice{Abstain: true, AbstainReason: "SDK core unavailable", ModelVersion: "none", ReceivedAt: now()}
 		}
 	}()
-	m, err := c.Manifest(ctx)
+	m, err := c.DecisionManifest(ctx)
 	if err != nil {
-		return AbstainAdvice("no HEAD model available", "none", "")
+		return AbstainAdvice("no decision model available", "none", "")
 	}
 	width, err := m.InputWidth()
 	if err != nil {
-		return AbstainAdvice("no HEAD model available", "none", "")
+		return AbstainAdvice("no decision model available", "none", "")
 	}
-	r, err := c.Reason(ctx, EncodeByteV1(BuildAdvisePrompt(ac), width))
+	r, err := c.Decide(ctx, EncodeByteV1(BuildAdvisePrompt(ac), width))
 	if err != nil {
 		if errors.Is(err, ErrNoModel) {
-			return AbstainAdvice("no HEAD model available", "none", "")
+			return AbstainAdvice("no decision model available", "none", "")
 		}
-		return AbstainAdvice("HEAD could not answer", "none", "")
+		return AbstainAdvice("decision model could not answer", "none", "")
 	}
 	return AdviceFromReasoning(*r, ac)
 }

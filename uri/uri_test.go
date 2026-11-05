@@ -64,8 +64,17 @@ func TestRegistryMatchesVectors(t *testing.T) {
 			t.Fatalf("resource types = %v, want %v", got, want)
 		}
 	}
-	if len(QueryKeys) != len(vectors.QueryKeys) {
-		t.Fatalf("query keys = %v, want %v", QueryKeys, vectors.QueryKeys)
+	gotKeys := append([]string(nil), QueryKeys...)
+	wantKeys := append([]string(nil), vectors.QueryKeys...)
+	sort.Strings(gotKeys)
+	sort.Strings(wantKeys)
+	if len(gotKeys) != len(wantKeys) {
+		t.Fatalf("query keys = %v, want %v", gotKeys, wantKeys)
+	}
+	for i := range gotKeys {
+		if gotKeys[i] != wantKeys[i] {
+			t.Fatalf("query keys = %v, want %v", gotKeys, wantKeys)
+		}
 	}
 }
 

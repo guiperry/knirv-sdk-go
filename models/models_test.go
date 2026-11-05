@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,11 +132,6 @@ func TestAdviceCases(t *testing.T) {
 }
 
 func TestWireRoundTrip(t *testing.T) {
-	var r Reasoning
-	load(t, "head_reasoning.json", &r)
-	if r.PlanText() != "hi" || r.Decision("action") == nil || r.Decision("nope") != nil {
-		t.Fatalf("%+v", r)
-	}
 	var m Manifest
 	load(t, "head_manifest.json", &m)
 	if w, err := m.InputWidth(); err != nil || w != 39 || m.DatasetManifestHash() != "dm" {
@@ -215,14 +211,14 @@ func TestOntologyClientRoutesAndHeaders(t *testing.T) {
 	}
 }
 
-func daemon(t *testing.T, models, reason http.HandlerFunc) *Client {
+func daemon(t *testing.T, decisionModels, reason http.HandlerFunc) *Client {
 	t.Helper()
 	mux := http.NewServeMux()
-	if models != nil {
-		mux.HandleFunc(HeadPrefix+"/models", models)
+	if decisionModels != nil {
+		mux.HandleFunc(HeartDecisionPrefix+"/models", decisionModels)
 	}
 	if reason != nil {
-		mux.HandleFunc(HeadPrefix+"/reason", reason)
+		mux.HandleFunc(HeartDecisionPrefix+"/reason", reason)
 	}
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -269,9 +265,9 @@ func TestClientAdviseAbstainsOnEveryFailure(t *testing.T) {
 	}
 }
 
-func TestClientReasonReportsNoModel(t *testing.T) {
+func TestClientDecideReportsNoModel(t *testing.T) {
 	c := daemon(t, nil, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
-	if _, err := c.Reason(context.Background(), []uint32{257}); err != ErrNoModel {
+	if _, err := c.Decide(context.Background(), []uint32{257}); err != ErrNoModel {
 		t.Fatalf("%v", err)
 	}
 }
@@ -411,6 +407,19 @@ func TestPlatformStatusRoles(t *testing.T) {
 			}
 		}
 	}
+	if m := cases["ready_all"].Status.Manifest; m == nil || m.Version != "2026-10-1" || m.Stages != 12 || len(m.Hash) != 64 {
+		t.Fatalf("manifest block not decoded: %+v", m)
+	}
+	// The Ollama block rides along in the status document; it is not a role.
+	o := cases["ready_all"].Status.Ollama
+	if o == nil || !o.Ready || o.Phase != "ready" || o.Endpoint != "http://127.0.0.1:11434" || !o.Pinned || o.Bind != "127.0.0.1" || len(o.Digest) != 64 {
+		t.Fatalf("ollama block not decoded: %+v", o)
+	}
+	for name, c := range cases {
+		if name != "ready_all" && c.Status.Ollama != nil {
+			t.Errorf("%s: unexpected ollama block", name)
+		}
+	}
 	if s := (RoleLine{Label: "a", Model: "m", State: "ready"}).String(); s != "a -> m - [ready]" {
 		t.Fatalf("%q", s)
 	}
@@ -440,5 +449,145 @@ func TestIndexStatusFixture(t *testing.T) {
 	got, err := NewClient(srv.URL, nil).IndexStatus(context.Background())
 	if err != nil || got.Spans != 1200 || got.Version != b.Version {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestVerifyFixture(t *testing.T) {
+	var doc map[string]json.RawMessage
+	load(t, "verify.json", &doc)
+	n := 0
+	for name, raw := range doc {
+		var c struct {
+			Response *VerifyResponse `json:"response"`
+		}
+		if json.Unmarshal(raw, &c) != nil || c.Response == nil {
+			continue
+		}
+		n++
+		if err := c.Response.Check(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if n != 4 {
+		t.Fatalf("expected 4 response cases, got %d", n)
+	}
+	var req struct {
+		R VerifyRequest `json:"request_inline"`
+	}
+	load(t, "verify.json", &req)
+	if req.R.Delivery != DeliveryInline || req.R.BudgetMS != 8000 || req.R.Mode != ModeIndex {
+		t.Fatalf("%+v", req.R)
+	}
+
+	// Served over the wire, the client returns it and a broken answer fails Check.
+	var cases map[string]struct {
+		Response VerifyResponse `json:"response"`
+	}
+	raw, _ := os.ReadFile(vectors + "/verify.json")
+	_ = json.Unmarshal(raw, &cases)
+	good := cases["inline_supported"].Response
+	mux := http.NewServeMux()
+	mux.HandleFunc(VerifyPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-KNIRV-Tenant") != "acme" {
+			http.Error(w, "tenant header missing", 400)
+			return
+		}
+		var in VerifyRequest
+		if json.NewDecoder(r.Body).Decode(&in) != nil || in.Text == "" || in.Tenant != "" {
+			http.Error(w, "bad body", 400)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(good)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	got, err := NewClient(srv.URL, nil).Verify(context.Background(), VerifyRequest{Text: "x", Tenant: "acme"})
+	if err != nil || got.GateLevel != 3 || len(got.Claims) != 1 || got.Check() != nil {
+		t.Fatalf("%v %+v", err, got)
+	}
+
+	broken := []func(*VerifyResponse){
+		func(r *VerifyResponse) { r.Gate = "accepted" },
+		func(r *VerifyResponse) { r.Refused = true },
+		func(r *VerifyResponse) { r.IsAccurate = true },
+		func(r *VerifyResponse) { r.Citations = []int{9} },
+		func(r *VerifyResponse) { r.Claims[0].Cited = []string{"sha256:nope"} },
+		func(r *VerifyResponse) { r.Claims[0].Verdict = "NEI" },
+		func(r *VerifyResponse) { r.Status = VerifyPending },
+		func(r *VerifyResponse) { r.Degraded = true },
+		func(r *VerifyResponse) { r.Confidence = 0.5 },
+	}
+	for i, f := range broken {
+		c := cases["inline_supported"].Response
+		c.Claims = append([]VerifyClaim(nil), c.Claims...)
+		c.Citations = append([]int(nil), c.Citations...)
+		f(&c)
+		if c.Check() == nil {
+			t.Errorf("broken variant %d passed Check", i)
+		}
+	}
+}
+
+// TestHeartGenerateRequestVectorRoundtrip pins the wire field name `with_decision`
+// (snake_case, matching the Rust core contract) by round-tripping the shared
+// heart_generate.json test vector: unmarshalling the request must populate
+// WithDecision, and marshalling a fresh request must emit `with_decision`. This is
+// the Go counterpart of the Rust core round-trip test.
+func TestHeartGenerateRequestVectorRoundtrip(t *testing.T) {
+	var v struct {
+		Request HeartGenerateRequest `json:"request"`
+	}
+	load(t, "heart_generate.json", &v)
+	if !v.Request.WithDecision {
+		t.Fatalf("vector request with_decision = %v, want true", v.Request.WithDecision)
+	}
+
+	// Marshalling a fresh request must emit the snake_case wire field.
+	b, err := json.Marshal(HeartGenerateRequest{Prompt: "x", WithDecision: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"with_decision":true`) {
+		t.Fatalf("marshalled request missing with_decision field: %s", b)
+	}
+
+	// Plain request: no with_decision must round-trip as false.
+	var plain HeartGenerateRequest
+	if err := json.Unmarshal([]byte(`{"prompt":"hello"}`), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if plain.WithDecision {
+		t.Fatal("plain request should default WithDecision to false")
+	}
+}
+
+// TestHeartGenerateWithDecisionSendsWithDecision is a binding-level check: the Go
+// client must actually send `with_decision:true` on the wire and reach decision
+// resolution (a non-nil decision in the response), not silently degrade to plain
+// generation.
+func TestHeartGenerateWithDecisionSendsWithDecision(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"text":"restarting service","ready":true,"progress":1.0,"decision":{"decisions":[{"name":"action","selected":"restart-service","abstain":false}],"abstained":false},"abstained":false}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, srv.Client())
+	out, err := c.HeartGenerateWithDecision(context.Background(), "restart the failing service", true)
+	if err != nil {
+		t.Fatalf("HeartGenerateWithDecision: %v", err)
+	}
+	if !strings.Contains(gotBody, `"with_decision":true`) {
+		t.Fatalf("client did not send with_decision:true on the wire: %s", gotBody)
+	}
+	if out.Decision == nil {
+		t.Fatal("expected a resolved decision in the response, got none (silently degraded)")
+	}
+	if out.Abstained {
+		t.Fatal("expected the decision to be resolved, not abstained")
 	}
 }

@@ -119,6 +119,29 @@ func TestFileProviderReadsSharedVector(t *testing.T) {
 	if bootSigner.Address() == rootSigner.Address() {
 		t.Fatal("root and boot signers must differ")
 	}
+	rolesJSON, err := os.ReadFile("../../testvectors/secrets/signer_roles_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roles map[string]string
+	if err := json.Unmarshal(rolesJSON, &roles); err != nil {
+		t.Fatal(err)
+	}
+	for name, identity := range roles {
+		want := rootSigner.Address()
+		if identity == "boot" {
+			want = bootSigner.Address()
+		} else if identity != "root" {
+			t.Fatalf("unknown fixture identity %q", identity)
+		}
+		signer, err := p.Signer(context.Background(), name)
+		if err != nil {
+			t.Fatalf("signer %q: %v", name, err)
+		}
+		if signer.Address() != want {
+			t.Fatalf("signer %q address = %q, want %q", name, signer.Address(), want)
+		}
+	}
 	if p.Health(context.Background()).State != StateReady {
 		t.Fatalf("health = %+v", p.Health(context.Background()))
 	}
@@ -156,6 +179,9 @@ func TestFileProviderWrongPasswordFailsClosed(t *testing.T) {
 	}
 	if _, err := p.Boot(context.Background()); err == nil {
 		t.Fatal("boot decrypted with the wrong password")
+	}
+	if status := p.Health(context.Background()); status.State != StateDegraded || status.Reason == "" {
+		t.Fatalf("locked key health = %+v, want degraded with reason", status)
 	}
 }
 

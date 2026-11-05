@@ -54,6 +54,7 @@ var sentinels = map[string]error{
 	"ErrTarget":           ErrTarget,
 	"ErrScope":            ErrScope,
 	"ErrTier":             ErrTier,
+	"ErrInvalid":          ErrInvalid,
 }
 
 // coded turns a native "[ErrX] message" error into a wrapped sentinel.

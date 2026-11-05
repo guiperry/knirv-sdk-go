@@ -22,13 +22,28 @@ const (
 	ManifestPath = "/models/manifest"
 	HeartPrefix  = "/models/heart"
 	HasherPrefix = "/models/hasher"
+	HandsPrefix  = "/models/hands"
+	// HeartDecisionPrefix is where HEART publishes the decision core (formerly
+	// HEAD's reasoning); HEART owns /models/heart/decide and the legacy
+	// /models/head/reason route has been retired. This value mirrors the
+	// decision-route contract defined in the Rust core (models.rs roles()); the
+	// core is authoritative and TestContractMirrorsCore pins the two together.
+	HeartDecisionPrefix = "/models/heart/decide"
 )
 
-// Roles in the registry. HASHER validates, HEART generates, HEAD reasons.
+// Roles in the registry. HASHER validates, HEART generates, HEAD reasons,
+// HANDS proposes structured task fields from a HEART decision.
 const (
 	RoleValidator = "validator"
 	RoleGenerator = "generator"
 	RoleReasoner  = "reasoner"
+	RoleHands     = "server_tasks"
+	// RoleVision is HEAD's post-migration role: the vision / multimodal model and
+	// the mirrored text generator. The role and its frame stage (head.vision) are
+	// defined in the Rust core (models.rs roles() and the frame constitution); the
+	// core is authoritative and TestContractMirrorsCore pins the bindings to it.
+	// The Go value below is a verified mirror, never an independent re-definition.
+	RoleVision = "vision"
 )
 
 // ModelStatus is one registry row. Loaded is false for a model that is
@@ -390,6 +405,21 @@ func (c *Client) HeartGenerate(ctx context.Context, prompt string) (string, erro
 	return out.Text, nil
 }
 
+// HeartGenerateWithDecision sends a decision-aware generate request. When resolve
+// is true HEART consults the decision core; otherwise it degrades to plain
+// generation and never fails just because the core is unavailable. It returns the
+// response so callers can read the text and the decision envelope.
+func (c *Client) HeartGenerateWithDecision(ctx context.Context, prompt string, resolve bool) (*HeartGenerateResponse, error) {
+	var out HeartGenerateResponse
+	if err := c.postJSON(ctx, HeartPrefix+"/generate", HeartGenerateRequest{Prompt: prompt, WithDecision: resolve}, &out); err != nil {
+		return nil, err
+	}
+	if out.Error != "" {
+		return nil, fmt.Errorf("heart: %s", out.Error)
+	}
+	return &out, nil
+}
+
 // HasherValidate runs the logical validator.
 func (c *Client) HasherValidate(ctx context.Context, req HasherValidateRequest) (*HasherValidateResult, error) {
 	var out HasherValidateResult
@@ -424,6 +454,9 @@ type IndexStatus struct {
 	HitRate     float64        `json:"hit_rate"`
 	LastBatch   string         `json:"last_batch,omitempty"`
 	LastIngest  string         `json:"last_ingest,omitempty"`
+	// StaleSeconds is the age of the newest ingest when the status was read; absent for
+	// an index that has never ingested. A deployment decides how old is too old.
+	StaleSeconds int64 `json:"stale_seconds,omitempty"`
 }
 
 // IndexStatus reads the evidence index status.

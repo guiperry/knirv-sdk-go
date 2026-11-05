@@ -46,6 +46,38 @@ type LlamaStatus struct {
 	Error      string         `json:"error,omitempty"`
 }
 
+// OllamaStatus is the embedding server KNIRVMODELS provisions and supervises the way it
+// does llama.cpp (Task 3.2). It carries no path and no secret. Ready is true only when
+// the instance answers, listens on loopback and has the embedding model; Pinned says the
+// model digest matched its configured pin (an empty pin is reported, not enforced);
+// Adopted says an instance that was already running is in use and will not be stopped.
+type OllamaStatus struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint"`
+	Model    string `json:"model"`
+	Digest   string `json:"digest,omitempty"`
+	Pinned   bool   `json:"pinned"`
+	Version  string `json:"version,omitempty"`
+	// Phase is idle, disabled, adopting, downloading, starting, pulling, ready,
+	// degraded, failed or stopped.
+	Phase   string `json:"phase"`
+	Ready   bool   `json:"ready"`
+	Adopted bool   `json:"adopted"`
+	Bind    string `json:"bind,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ManifestStatus names the capability manifest the daemon serves: the constitution
+// version, how many stages and tools it lists, and a hash over every stage's frame
+// hash, so a change to any frame changes it. It carries no frame text.
+type ManifestStatus struct {
+	Version string `json:"constitution_version"`
+	Stages  int    `json:"stages"`
+	Tools   int    `json:"tools"`
+	Hash    string `json:"hash"`
+	Error   string `json:"error,omitempty"`
+}
+
 // RoutingEvent is one harness decision, without any prompt or output text.
 type RoutingEvent struct {
 	ID        string   `json:"id"`
@@ -79,6 +111,8 @@ type PlatformStatus struct {
 	Daemon      []ModelStatus         `json:"daemon"`
 	DaemonError string                `json:"daemon_error,omitempty"`
 	Llama       *LlamaStatus          `json:"llama,omitempty"`
+	Ollama      *OllamaStatus         `json:"ollama,omitempty"`
+	Manifest    *ManifestStatus       `json:"manifest,omitempty"`
 	Routing     []RoutingEvent        `json:"routing"`
 	Stats       map[string]RouteStats `json:"stats"`
 }

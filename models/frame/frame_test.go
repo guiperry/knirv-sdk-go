@@ -118,11 +118,11 @@ func TestPolicyAllowList(t *testing.T) {
 	if !r.Allows("heart.chat", "index.search") || r.Allows("heart.chat", "rules.add") || r.Allows("ghost", "status") {
 		t.Fatal("allow-list wrong")
 	}
-	// Only ops.assistant may reach T2 tools, and only as proposals.
+	// Only hands.assistant may reach T2 tools, and only as proposals.
 	for _, id := range r.StageIDs() {
 		s, _ := r.Stage(id)
 		for _, n := range s.Tools {
-			if tl, _ := r.Tool(n); tl.Tier == T2Mutate && id != "ops.assistant" {
+			if tl, _ := r.Tool(n); tl.Tier == T2Mutate && id != "hands.assistant" {
 				t.Errorf("%s exposes mutating tool %s", id, n)
 			}
 		}

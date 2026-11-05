@@ -178,7 +178,15 @@ func (p *FileProvider) Boot(ctx context.Context) (*BootSecrets, error) {
 }
 
 func (p *FileProvider) Signer(ctx context.Context, name string) (knirvsigning.RemoteSigner, error) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
+	// The core owns the name -> identity mapping (secrets.signer_role); this only
+	// picks the loaded key file that identity stands for.
+	var resolved struct {
+		Role string `json:"role"`
+	}
+	if err := call("secrets.signer_role", map[string]string{"name": name}, &resolved); err != nil {
+		return nil, fmt.Errorf("secrets: %w", err)
+	}
+	switch resolved.Role {
 	case "root":
 		root, err := p.Root(ctx)
 		if err != nil {
@@ -197,7 +205,7 @@ func (p *FileProvider) Signer(ctx context.Context, name string) (knirvsigning.Re
 			return nil, errors.New("secrets: no master wallet key in boot.key")
 		}
 		return newSigner(boot.MasterWalletKeyHex)
-	case "validation", "validation-chain":
+	case "validation":
 		if root, err := p.Root(ctx); err != nil {
 			return nil, err
 		} else if root != nil && root.RootPrivateKeyHex != "" {
@@ -212,17 +220,35 @@ func (p *FileProvider) Signer(ctx context.Context, name string) (knirvsigning.Re
 		}
 		return newSigner(boot.MasterWalletKeyHex)
 	default:
-		return nil, fmt.Errorf("secrets: unknown signer %q (want root, boot, or validation)", name)
+		return nil, fmt.Errorf("secrets: unknown signer %q", name)
 	}
 }
 
 func (p *FileProvider) Health(ctx context.Context) Status {
+	if err := ctx.Err(); err != nil {
+		return Status{Backend: "file", State: StateDegraded, Reason: err.Error()}
+	}
 	switch {
-	case FindRoot() != "" || FindBoot() != "":
-		return Status{Backend: "file", State: StateReady}
+	case FindRoot() != "":
+		root, err := p.Root(ctx)
+		if err != nil {
+			return Status{Backend: "file", State: StateDegraded, Reason: err.Error()}
+		}
+		if root == nil {
+			return Status{Backend: "file", State: StateDegraded, Reason: "root key disappeared during health check"}
+		}
+	case FindBoot() != "":
+		boot, err := p.Boot(ctx)
+		if err != nil {
+			return Status{Backend: "file", State: StateDegraded, Reason: err.Error()}
+		}
+		if boot == nil {
+			return Status{Backend: "file", State: StateDegraded, Reason: "boot key disappeared during health check"}
+		}
 	default:
 		return Status{Backend: "file", State: StateAbsent, Reason: "no root.key or boot.key found"}
 	}
+	return Status{Backend: "file", State: StateReady}
 }
 
 func newSigner(hexKey string) (knirvsigning.RemoteSigner, error) {
