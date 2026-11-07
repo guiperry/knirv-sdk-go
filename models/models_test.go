@@ -98,6 +98,7 @@ func TestAdviceCases(t *testing.T) {
 		Name      string        `json:"name"`
 		Reasoning Reasoning     `json:"reasoning"`
 		Context   AdviseContext `json:"context"`
+		Questions json.RawMessage `json:"questions"`
 		Expect    struct {
 			Abstain bool    `json:"abstain"`
 			Action  string  `json:"recommended_action"`
@@ -108,6 +109,10 @@ func TestAdviceCases(t *testing.T) {
 	}
 	load(t, "advice_cases.json", &cases)
 	for _, c := range cases {
+		// Set-request fixtures (knirv-heart/v2) carry no advice; skip them here.
+		if len(c.Questions) > 0 {
+			continue
+		}
 		a := AdviceFromReasoning(c.Reasoning, c.Context)
 		if a.Abstain != c.Expect.Abstain {
 			t.Errorf("%s: abstain=%v %+v", c.Name, a.Abstain, a)
@@ -589,5 +594,49 @@ func TestHeartGenerateWithDecisionSendsWithDecision(t *testing.T) {
 	}
 	if out.Abstained {
 		t.Fatal("expected the decision to be resolved, not abstained")
+	}
+}
+
+// TestClientDecideSets is a binding-level check: the Go client posts the
+// choice-set questions at /models/heart/decide/sets and decodes the per-candidate
+// probabilities (knirv-heart/v2) into Decision.Candidates.
+func TestClientDecideSets(t *testing.T) {
+	var gotPath string
+	var gotQuestions json.RawMessage
+	mux := http.NewServeMux()
+	mux.HandleFunc(HeartDecisionPrefix+"/sets", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var req struct {
+			Questions json.RawMessage `json:"questions"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		gotQuestions = req.Questions
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model_version":"v2","dataset_manifest_hash":"dm","policy_bundle_hash":"p",
+			"decisions":[{"name":"route","kind":"choice","candidates":[{"id":"a","text":"route-a","probability":0.7},{"id":"b","text":"route-b","probability":0.3}]}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewClient(srv.URL, nil)
+
+	questions, _ := json.Marshal([]map[string]any{{"name": "route", "state": "develop", "choices": []map[string]string{{"id": "a", "text": "route-a"}, {"id": "b", "text": "route-b"}}}})
+	r, err := c.DecideSets(context.Background(), questions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != HeartDecisionPrefix+"/sets" {
+		t.Fatalf("set request did not hit %s/sets: %q", HeartDecisionPrefix, gotPath)
+	}
+	if string(gotQuestions) != string(questions) {
+		t.Fatalf("questions not forwarded: got %s want %s", gotQuestions, questions)
+	}
+	if len(r.Decisions) != 1 || r.Decisions[0].Name != "route" || len(r.Decisions[0].Candidates) != 2 {
+		t.Fatalf("decoded wrong: %+v", r)
+	}
+	if p := r.Decisions[0].Candidates[0].Probability; p < 0.69 || p > 0.71 {
+		t.Fatalf("candidate probability lost: %v", p)
+	}
+	if r.Decisions[0].Candidates[0].ID != "a" || r.Decisions[0].Candidates[0].Text != "route-a" {
+		t.Fatalf("candidate identity lost: %+v", r.Decisions[0].Candidates[0])
 	}
 }

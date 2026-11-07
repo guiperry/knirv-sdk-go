@@ -98,6 +98,19 @@ type BootSecrets struct {
 	SMTPPassword       string `json:"smtp_password"`
 }
 
+// ValidatorSettingsResult is the operator-tunable validator configuration held in
+// the OpenBao KV group node/validator (OpenBao.md §4.7). These settings can only
+// LOWER the privilege the role resolver (Task 8.1) derived; a value that would
+// raise privilege is ignored by the provider (see BaoProvider.ValidatorSettings).
+type ValidatorSettingsResult struct {
+	Enabled             bool     `json:"enabled"`
+	OracleModeMax       string   `json:"oracle_mode_max"` // "active" | "standby" | "off"
+	ReplicationSources  []string `json:"replication_sources"`
+	ReplicationInterval string   `json:"replication_interval"`
+	MaxLagSeq          int      `json:"max_lag_seq"`
+	ValidatorID        string   `json:"validator_id"`
+}
+
 // Provider is the single secrets surface used by every service. Implementations
 // must be safe for concurrent use.
 type Provider interface {
@@ -109,4 +122,9 @@ type Provider interface {
 	// "boot", and "validation" (root's key on Root nodes, boot's on Bootnodes).
 	Signer(ctx context.Context, name string) (knirvsigning.RemoteSigner, error)
 	Health(ctx context.Context) Status
+	// ValidatorSettings returns the operator-tunable validator configuration from
+	// OpenBao (or the resolver-derived defaults under the file backend). resolverMax
+	// is the privilege ceiling the role resolver (8.1) derived; the returned
+	// OracleModeMax never exceeds it (lowering-only). Task 2a.6.
+	ValidatorSettings(ctx context.Context, resolverMax string) (*ValidatorSettingsResult, error)
 }

@@ -224,6 +224,20 @@ func (p *FileProvider) Signer(ctx context.Context, name string) (knirvsigning.Re
 	}
 }
 
+// ValidatorSettings under the file backend returns the resolver-derived ceiling as
+// the effective configuration: there is no OpenBao KV group to read. The consumer
+// logs this fallback (no silent downgrade, OpenBao.md §0.2 rule 7) and the signer
+// still comes from FileProvider.Signer. Task 2a.6.
+func (p *FileProvider) ValidatorSettings(ctx context.Context, resolverMax string) (*ValidatorSettingsResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &ValidatorSettingsResult{
+		Enabled:       true,
+		OracleModeMax: resolverMax,
+	}, nil
+}
+
 func (p *FileProvider) Health(ctx context.Context) Status {
 	if err := ctx.Err(); err != nil {
 		return Status{Backend: "file", State: StateDegraded, Reason: err.Error()}

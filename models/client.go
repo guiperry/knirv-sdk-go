@@ -138,6 +138,30 @@ func (c *Client) Decide(ctx context.Context, tokens []uint32) (*Reasoning, error
 	return &out, nil
 }
 
+// DecideSets runs choice-set questions against a knirv-heart/v2 model, served by
+// HEART at /models/heart/decide/sets. questions is the raw JSON array of
+// SetQuestion; a v1 model answers with HTTP 400 ("no choice-set heads").
+func (c *Client) DecideSets(ctx context.Context, questions json.RawMessage) (*Reasoning, error) {
+	body, _ := json.Marshal(map[string]any{"questions": questions})
+	res, err := c.Do(ctx, http.MethodPost, HeartDecisionPrefix+"/sets", body, http.Header{})
+	if err != nil {
+		return nil, fmt.Errorf("heart decision sets unavailable: %w", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode == http.StatusServiceUnavailable {
+		return nil, ErrNoModel
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("heart decision sets: HTTP %d: %s", res.StatusCode, bytes.TrimSpace(raw))
+	}
+	var out Reasoning
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("heart decision sets: malformed response: %w", err)
+	}
+	return &out, nil
+}
+
 // Advise is the whole supervisor-advice path: manifest → encode → reason →
 // advice. Every failure is an abstention, never an error.
 func (c *Client) Advise(ctx context.Context, ac AdviseContext) (advice SupervisorAdvice) {

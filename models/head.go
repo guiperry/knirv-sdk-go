@@ -19,6 +19,16 @@ type Decision struct {
 	Value         *float32  `json:"value"`
 	Confidence    *float32  `json:"confidence"`
 	Abstain       bool      `json:"abstain"`
+	// Candidates carries the per-candidate probabilities of a choice-set (knirv-heart/v2)
+	// answer, in the request's own order. Absent for v1 decision-head output.
+	Candidates []Candidate `json:"candidates,omitempty"`
+}
+
+// Candidate is one choice-set option with its probability (knirv-heart/v2).
+type Candidate struct {
+	ID          string  `json:"id"`
+	Text        string  `json:"text"`
+	Probability float32 `json:"probability"`
 }
 
 // Reasoning mirrors the knirv-head crate's Reasoning JSON (head/src/model.rs).

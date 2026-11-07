@@ -3,8 +3,10 @@ package secrets
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -239,6 +241,136 @@ func (p *BaoProvider) kv(ctx context.Context, group string) (map[string]json.Raw
 	return out.Data.Data, nil
 }
 
+// RawSign signs a precomputed 32-byte digest with the named identity through the
+// plugin's raw compact endpoint, returning a hex 64-byte r||s secp256k1 signature
+// (the recovery byte is stripped) — byte-identical to the registry's legacy
+// dcrd SignCompact(priv, digest, true)[1:] form. The digest is supplied by the
+// caller (typically sha256 of a canonicalized message); the plugin never
+// canonicalizes, so the signed bytes match the in-process legacy signer exactly.
+// Only allowlisted purposes (failover-identity) are accepted by the plugin, and
+// the OpenBao ACL grants the path to the backend/failover AppRole only.
+func (p *BaoProvider) RawSign(ctx context.Context, purpose string, digest []byte) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	// Validate against the canonical raw-sign contract (mirror of core
+	// secrets.raw_sign_validate) before any transport. The plugin enforces the
+	// same contract server-side as the outer gate (OpenBao.md §4.6).
+	if err := validateRawSign(purpose, hex.EncodeToString(digest)); err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]string{"digest": hex.EncodeToString(digest)})
+	if err != nil {
+		return "", fmt.Errorf("secrets: raw sign encode: %w", err)
+	}
+	url := "http://localhost/v1/knirv/sign/raw/" + purpose
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("secrets: raw sign %s: %w", purpose, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if p.token != "" {
+		req.Header.Set("X-Vault-Token", p.token)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("secrets: raw sign %s: %w", purpose, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("secrets: raw sign %s: http %d", purpose, resp.StatusCode)
+	}
+	var env struct {
+		Data struct {
+			Signature string `json:"signature"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return "", fmt.Errorf("secrets: raw sign %s: decode: %w", purpose, err)
+	}
+	if env.Data.Signature == "" {
+		return "", fmt.Errorf("secrets: raw sign %s: empty signature", purpose)
+	}
+	return env.Data.Signature, nil
+}
+
+// validatorKVGroup is the OpenBao KV v2 group that holds operator-tunable
+// validator settings (OpenBao.md §4.7). It is read-only for the Oracle policy and
+// written only by the launcher at first boot / enrollment.
+const validatorKVGroup = "validator"
+
+// ValidatorSettings reads node/validator and applies the lowering-only rule: the
+// KV values may reduce, never raise, the privilege the role resolver (8.1) derived.
+// resolverMax is the ceiling the resolver produced (e.g. "active", "standby",
+// "off"); the returned OracleModeMax never exceeds it. When the group is absent the
+// resolver-derived ceiling is returned unchanged.
+func (p *BaoProvider) ValidatorSettings(ctx context.Context, resolverMax string) (*ValidatorSettingsResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m, err := p.kv(ctx, validatorKVGroup)
+	if err != nil {
+		return nil, err
+	}
+	res := &ValidatorSettingsResult{
+		Enabled:       true,
+		OracleModeMax: resolverMax,
+	}
+	if raw, ok := m["enabled"]; ok {
+		// Only an explicit false lowers; absence defaults to enabled.
+		var enabled bool
+		if json.Unmarshal(raw, &enabled) == nil {
+			res.Enabled = enabled
+		}
+	}
+	if raw, ok := m["oracle_mode_max"]; ok {
+		var mode string
+		if json.Unmarshal(raw, &mode) == nil && mode != "" {
+			// Lowering-only: keep the KV value only when it does not exceed the
+			// resolver ceiling. A higher value is ignored (the resolver wins).
+			if oracleModeRank(mode) <= oracleModeRank(resolverMax) {
+				res.OracleModeMax = mode
+			} else {
+				// A raise-above-resolver request is a misconfiguration or a stale
+				// KV value; name the field and ignore it rather than widening
+				// privilege (OpenBao.md §4.7 rule: the resolver is authoritative).
+				log.Printf("knirv secrets: ValidatorSettings ignoring oracle_mode_max=%q on node/validator: it would raise privilege above the role-resolver ceiling %q; keeping %q",
+					mode, resolverMax, resolverMax)
+			}
+		}
+	}
+	if raw, ok := m["replication_sources"]; ok {
+		var src []string
+		if json.Unmarshal(raw, &src) == nil {
+			res.ReplicationSources = src
+		}
+	}
+	res.ReplicationInterval = str(m, "replication_interval")
+	if raw, ok := m["max_lag_seq"]; ok {
+		var n int
+		if json.Unmarshal(raw, &n) == nil {
+			res.MaxLagSeq = n
+		}
+	}
+	res.ValidatorID = str(m, "validator_id")
+	return res, nil
+}
+
+// oracleModeRank orders the Oracle privilege ceiling: higher rank = more privilege.
+// An unknown value sorts below everything so it can never widen permissions.
+func oracleModeRank(mode string) int {
+	switch mode {
+	case "active":
+		return 2
+	case "standby":
+		return 1
+	case "off":
+		return 0
+	default:
+		return -1
+	}
+}
+
 func cloudflareFromMap(m map[string]json.RawMessage) Cloudflare {
 	return Cloudflare{
 		APIToken:           str(m, "api_token"),
@@ -281,37 +413,74 @@ type baoSigner struct {
 	token  string
 }
 
-type baoKeyInfo struct {
+// KeyInfo is the public description a plugin key exposes (never the private key).
+type KeyInfo struct {
 	Address   string `json:"address"`
 	PublicKey []byte `json:"public_key"`
 }
 
-func (s *baoSigner) keyInfo(ctx context.Context) (baoKeyInfo, error) {
+func (p *BaoProvider) keyInfo(ctx context.Context, purpose string) (KeyInfo, error) {
+	url := "http://localhost/v1/knirv/keys/" + purpose
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return KeyInfo{}, err
+	}
+	if p.token != "" {
+		req.Header.Set("X-Vault-Token", p.token)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return KeyInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KeyInfo{}, fmt.Errorf("secrets: read key %s returned HTTP %d", purpose, resp.StatusCode)
+	}
+	// The plugin returns its payload under OpenBao's standard "data" envelope.
+	var env struct {
+		Data KeyInfo `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return KeyInfo{}, fmt.Errorf("secrets: decode key %s: %w", purpose, err)
+	}
+	if env.Data.Address == "" && len(env.Data.PublicKey) == 0 {
+		return KeyInfo{}, fmt.Errorf("secrets: key %s returned an empty address and public key", purpose)
+	}
+	return env.Data, nil
+}
+
+// KeyInfo returns the public description (address + compressed public key) of the
+// named signing identity from the plugin. It is used by callers that sign through
+// Bao but still need the identity's public fields (e.g. the failover control plane).
+func (p *BaoProvider) KeyInfo(ctx context.Context, purpose string) (KeyInfo, error) {
+	return p.keyInfo(ctx, purpose)
+}
+
+func (s *baoSigner) keyInfo(ctx context.Context) (KeyInfo, error) {
 	url := "http://localhost/v1/knirv/keys/" + s.name
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return baoKeyInfo{}, err
+		return KeyInfo{}, err
 	}
 	if s.token != "" {
 		req.Header.Set("X-Vault-Token", s.token)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return baoKeyInfo{}, err
+		return KeyInfo{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return baoKeyInfo{}, fmt.Errorf("secrets: read key %s returned HTTP %d", s.name, resp.StatusCode)
+		return KeyInfo{}, fmt.Errorf("secrets: read key %s returned HTTP %d", s.name, resp.StatusCode)
 	}
-	// The plugin returns its payload under OpenBao's standard "data" envelope.
 	var env struct {
-		Data baoKeyInfo `json:"data"`
+		Data KeyInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return baoKeyInfo{}, fmt.Errorf("secrets: decode key %s: %w", s.name, err)
+		return KeyInfo{}, fmt.Errorf("secrets: decode key %s: %w", s.name, err)
 	}
 	if env.Data.Address == "" && len(env.Data.PublicKey) == 0 {
-		return baoKeyInfo{}, fmt.Errorf("secrets: key %s returned an empty address and public key", s.name)
+		return KeyInfo{}, fmt.Errorf("secrets: key %s returned an empty address and public key", s.name)
 	}
 	return env.Data, nil
 }

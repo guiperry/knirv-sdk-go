@@ -68,7 +68,7 @@ func defaultHandler(groups map[string]map[string]string, keyAddress string) http
 		}
 	})
 	mux.HandleFunc("/v1/knirv/keys/", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": baoKeyInfo{
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": KeyInfo{
 			Address:   keyAddress,
 			PublicKey: []byte("public-key-bytes"),
 		}})
@@ -198,6 +198,9 @@ func (f *fakeProvider) Signer(_ context.Context, _ string) (knirvsigning.RemoteS
 func (f *fakeProvider) Health(context.Context) Status {
 	return Status{Backend: "fake", State: StateReady}
 }
+func (f *fakeProvider) ValidatorSettings(_ context.Context, resolverMax string) (*ValidatorSettingsResult, error) {
+	return &ValidatorSettingsResult{Enabled: true, OracleModeMax: resolverMax}, nil
+}
 
 type testSigner struct{ addr string }
 
@@ -300,7 +303,7 @@ func TestBaoProviderSignerResolvesNameViaCore(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": knirvsigning.SignedTransaction{Address: "addr"}})
 	})
 	mux.HandleFunc("/v1/knirv/keys/", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": baoKeyInfo{Address: "addr", PublicKey: []byte("pk")}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": KeyInfo{Address: "addr", PublicKey: []byte("pk")}})
 	})
 	socket, stop := fakeBao(t, mux)
 	defer stop()
@@ -345,7 +348,7 @@ func TestBaoProviderSignerNameResolution(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": knirvsigning.SignedTransaction{Address: "a"}})
 		})
 		mux.HandleFunc("/v1/knirv/keys/", func(w http.ResponseWriter, _ *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": baoKeyInfo{Address: "a", PublicKey: []byte("pk")}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": KeyInfo{Address: "a", PublicKey: []byte("pk")}})
 		})
 		socket, stop := fakeBao(t, mux)
 		p := NewBaoProvider(socket, "tok")
@@ -416,6 +419,9 @@ func (e *errorProvider) Signer(context.Context, string) (knirvsigning.RemoteSign
 }
 func (e *errorProvider) Health(context.Context) Status {
 	return Status{Backend: "err", State: StateDegraded}
+}
+func (e *errorProvider) ValidatorSettings(context.Context, string) (*ValidatorSettingsResult, error) {
+	return nil, e.err
 }
 
 func TestDualReadSelfCheckProviderError(t *testing.T) {
