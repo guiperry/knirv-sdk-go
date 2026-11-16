@@ -64,36 +64,97 @@ type Runner struct {
 	max  int
 }
 
+// The process-wide default runner. defaultRunner is set only on success. While
+// a compile runs, defaultJob is the shared compile that concurrent callers wait
+// on. Both are guarded by defaultMu, which is never held across a compile or a
+// download.
 var (
 	defaultMu     sync.Mutex
 	defaultRunner *Runner
+	defaultJob    *compileJob
 )
 
-// Default returns the process-wide runner, loading and compiling the module on
-// first use. A failure (for example no network on a cold machine) is not
-// remembered: the next call tries again.
-func Default() (*Runner, error) {
+// compileJob is one shared compile of the default runner. runner and err are
+// written once, before done is closed.
+type compileJob struct {
+	done   chan struct{}
+	runner *Runner
+	err    error
+}
+
+// compileModule compiles verified module bytes. It is a variable only so tests
+// can inject a failure or a stall; nothing else reassigns it.
+var compileModule = func(ctx context.Context, rt wazero.Runtime, moduleBytes []byte) (wazero.CompiledModule, error) {
+	return rt.CompileModule(ctx, moduleBytes)
+}
+
+// run performs the compile and publishes its result. It runs detached from the
+// caller's ctx, so the compile finishes even when every caller has left, and the
+// runner is cached for the next one. A failure clears the job and caches
+// nothing, so the next call compiles again.
+func (j *compileJob) run(moduleBytes []byte) {
+	r, err := newRunner(context.Background(), moduleBytes)
 	defaultMu.Lock()
-	defer defaultMu.Unlock()
-	if defaultRunner != nil {
-		return defaultRunner, nil
+	if err == nil {
+		defaultRunner = r
 	}
-	r, err := New(context.Background())
+	if defaultJob == j {
+		defaultJob = nil
+	}
+	defaultMu.Unlock()
+	j.runner, j.err = r, err
+	close(j.done)
+}
+
+// Default returns the process-wide runner, loading and compiling the module on
+// first use. ctx bounds the whole call. The download (see Load) and the compile
+// both run detached and are shared with concurrent callers; a caller whose ctx
+// ends returns an ErrLoadCanceled error without waiting for them, and the work
+// it left still finishes and is cached for later callers. A failed compile is
+// not remembered: the next call tries again.
+func Default(ctx context.Context) (*Runner, error) {
+	moduleBytes, err := Load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defaultRunner = r
-	return r, nil
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLoadCanceled, err)
+	}
+	defaultMu.Lock()
+	if defaultRunner != nil {
+		r := defaultRunner
+		defaultMu.Unlock()
+		return r, nil
+	}
+	job := defaultJob
+	if job == nil {
+		job = &compileJob{done: make(chan struct{})}
+		defaultJob = job
+		go job.run(moduleBytes)
+	}
+	defaultMu.Unlock()
+
+	select {
+	case <-job.done:
+		return job.runner, job.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", ErrLoadCanceled, ctx.Err())
+	}
 }
 
 // New loads (see Load) and compiles the core module. Prefer Default unless
 // isolation is needed.
 func New(ctx context.Context) (*Runner, error) {
-	config := wazero.NewRuntimeConfig().WithMemoryLimitPages(maxPages)
 	moduleBytes, err := Load(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return newRunner(ctx, moduleBytes)
+}
+
+// newRunner compiles verified module bytes into a runner.
+func newRunner(ctx context.Context, moduleBytes []byte) (*Runner, error) {
+	config := wazero.NewRuntimeConfig().WithMemoryLimitPages(maxPages)
 	// Compiling the module costs about a second per process, so the compiled
 	// code is cached next to the downloaded module (once per machine and
 	// version). KNIRV_WASM_CACHE_DIR relocates the cache.
@@ -114,7 +175,7 @@ func New(ctx context.Context) (*Runner, error) {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("knirv core: instantiate host imports: %w", err)
 	}
-	compiled, err := rt.CompileModule(ctx, moduleBytes)
+	compiled, err := compileModule(ctx, rt, moduleBytes)
 	if err != nil {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("knirv core: compile module: %w", err)

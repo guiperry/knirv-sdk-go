@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	knirvsigning "github.com/guiperry/knirv-sdk-go/signing"
-	"golang.org/x/crypto/scrypt"
 )
 
 // Fields is a decrypted key file expressed by proto field number. It exists
@@ -57,31 +56,16 @@ func readKeyFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// keyFileRequest builds a core request for a key file. The core owns the format
-// and says which scrypt cost it calls for (secrets.kdf_params); scrypt is a
-// memory-hard primitive that runs several times faster natively than inside the
-// sandbox, so the host runs it and hands the derived key back. The password
-// itself never enters the core, and a wrong one still fails the AES-GCM check.
-func keyFileRequest(path string, data, password []byte) (map[string]string, error) {
-	encoded := base64.StdEncoding.EncodeToString(data)
-	var kdf struct {
-		Salt   []byte `json:"salt_base64"`
-		LogN   int    `json:"log_n"`
-		R      int    `json:"r"`
-		P      int    `json:"p"`
-		KeyLen int    `json:"key_len"`
+// keyFileRequest builds a core request for a key file. The core owns the format,
+// the scrypt cost and the derivation (secrets.decrypt_bytes and the other
+// secrets.* operations take the password and run scrypt in the Rust core); the
+// host only reads the file. A wrong password still fails the AES-GCM check.
+func keyFileRequest(path string, data, password []byte) map[string]string {
+	return map[string]string{
+		"path":            path,
+		"data_base64":     base64.StdEncoding.EncodeToString(data),
+		"password_base64": base64.StdEncoding.EncodeToString(password),
 	}
-	if err := call("secrets.kdf_params", map[string]string{"path": path, "data_base64": encoded}, &kdf); err != nil {
-		return nil, err
-	}
-	if kdf.LogN < 1 || kdf.LogN > 20 {
-		return nil, fmt.Errorf("%s: unsupported scrypt cost 2^%d", path, kdf.LogN)
-	}
-	key, err := scrypt.Key(password, kdf.Salt, 1<<kdf.LogN, kdf.R, kdf.P, kdf.KeyLen)
-	if err != nil {
-		return nil, fmt.Errorf("derive key: %w", err)
-	}
-	return map[string]string{"path": path, "data_base64": encoded, "derived_key_base64": base64.StdEncoding.EncodeToString(key)}, nil
 }
 
 // DecryptFile reads an encrypted key file and returns the decrypted inner
@@ -91,10 +75,7 @@ func DecryptFile(path string, password []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	request, err := keyFileRequest(path, data, password)
-	if err != nil {
-		return nil, err
-	}
+	request := keyFileRequest(path, data, password)
 	var out struct {
 		Plaintext []byte `json:"plaintext_base64"`
 	}
@@ -110,10 +91,7 @@ func DecryptFields(path string, password []byte) (*Fields, error) {
 	if err != nil {
 		return nil, err
 	}
-	request, err := keyFileRequest(path, data, password)
-	if err != nil {
-		return nil, err
-	}
+	request := keyFileRequest(path, data, password)
 	var fields Fields
 	if err := call("secrets.fields_bytes", request, &fields); err != nil {
 		return nil, err
@@ -298,10 +276,7 @@ func loadRoot() (*RootSecrets, error) {
 	if err != nil {
 		return nil, err
 	}
-	request, err := keyFileRequest(path, data, []byte(password))
-	if err != nil {
-		return nil, err
-	}
+	request := keyFileRequest(path, data, []byte(password))
 	var root RootSecrets
 	request["kind"] = "root"
 	if err := call("secrets.open_bytes", request, &root); err != nil {
@@ -323,10 +298,7 @@ func loadBoot() (*BootSecrets, error) {
 	if err != nil {
 		return nil, err
 	}
-	request, err := keyFileRequest(path, data, []byte(password))
-	if err != nil {
-		return nil, err
-	}
+	request := keyFileRequest(path, data, []byte(password))
 	var boot BootSecrets
 	request["kind"] = "boot"
 	if err := call("secrets.open_bytes", request, &boot); err != nil {

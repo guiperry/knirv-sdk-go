@@ -33,53 +33,98 @@ const (
 // ErrDigest reports bytes whose SHA-256 is not the one this package is pinned to.
 var ErrDigest = errors.New("knirv core: digest mismatch")
 
+// ErrLoadCanceled reports a Load that ended before the core was verified because
+// the caller's context was done or the bounded download timed out. It wraps the
+// underlying context error, so errors.Is matches both ErrLoadCanceled and
+// context.Canceled or context.DeadlineExceeded. It says nothing about the bytes
+// and is never a verdict on the core; a later Load tries again.
+var ErrLoadCanceled = errors.New("knirv core: load canceled")
+
+// loadCap bounds one download attempt, whoever started it.
+const loadCap = 2 * time.Minute
+
 var (
 	memMu    sync.Mutex
 	mem      []byte // verified bytes; the hot path after the first load
-	inflight *load  // shared by concurrent first callers
+	inflight *load  // shared by concurrent callers while a download runs
 	warnOnce sync.Once
 )
 
+// load is one shared download. waiters and inflight are guarded by memMu.
+// bytes and err are written once, before done is closed.
 type load struct {
-	done  chan struct{}
-	bytes []byte
-	err   error
+	done    chan struct{}
+	cancel  context.CancelFunc // stops the download when no caller is waiting
+	waiters int
+	bytes   []byte
+	err     error
 }
 
 // Load returns the verified core module. It consults, in order, the in-process
 // copy, the application data directory, and the release URL. Nothing is read or
 // fetched until the first call, and importing the package does no I/O.
+//
+// Each caller waits no longer than its own ctx allows. Callers that overlap
+// share one download. A caller whose ctx ends stops waiting and gets an
+// ErrLoadCanceled error; the download continues while another caller still
+// waits, and is cancelled once none does. Only a verified core is kept, so an
+// abandoned or failed load is retried by the next call.
 func Load(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLoadCanceled, err)
+	}
 	memMu.Lock()
 	if mem != nil {
 		b := mem
 		memMu.Unlock()
 		return b, nil
 	}
-	if inflight != nil {
-		l := inflight
-		memMu.Unlock()
-		select {
-		case <-l.done:
-			return l.bytes, l.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	l := inflight
+	if l == nil {
+		// The download is detached from ctx: callers leave by cancelling their
+		// own wait, and the last one to leave cancels the download.
+		dlCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loadCap)
+		l = &load{done: make(chan struct{}), cancel: cancel}
+		inflight = l
+		go l.run(dlCtx)
 	}
-	l := &load{done: make(chan struct{})}
-	inflight = l
+	l.waiters++
 	memMu.Unlock()
 
-	// The download must not die with the first caller's context while others wait.
-	l.bytes, l.err = fetch(context.WithoutCancel(ctx))
-	memMu.Lock()
-	if l.err == nil {
-		mem = l.bytes
+	select {
+	case <-l.done:
+		return l.bytes, l.err
+	case <-ctx.Done():
+		memMu.Lock()
+		l.waiters--
+		if l.waiters == 0 && inflight == l {
+			// Nobody is left. Forget this load so a later caller starts afresh
+			// rather than joining a download that is being torn down.
+			inflight = nil
+			l.cancel()
+		}
+		memMu.Unlock()
+		return nil, fmt.Errorf("%w: %w", ErrLoadCanceled, ctx.Err())
 	}
-	inflight = nil
+}
+
+// run performs the shared download and publishes its result.
+func (l *load) run(ctx context.Context) {
+	defer l.cancel()
+	b, err := fetch(ctx)
+	if err != nil && ctx.Err() != nil && !errors.Is(err, ErrDigest) {
+		err = fmt.Errorf("%w: %w", ErrLoadCanceled, err)
+	}
+	memMu.Lock()
+	l.bytes, l.err = b, err
+	if err == nil {
+		mem = b
+	}
+	if inflight == l {
+		inflight = nil
+	}
 	memMu.Unlock()
 	close(l.done)
-	return l.bytes, l.err
 }
 
 // resetForTest drops the in-process copy.
@@ -124,9 +169,8 @@ func fetch(ctx context.Context) ([]byte, error) {
 	return b, nil
 }
 
+// download fetches url. ctx carries the caller's deadline and the loadCap bound.
 func download(ctx context.Context, url string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

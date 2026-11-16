@@ -115,7 +115,7 @@ func TestBootnodeEnrollmentVectors(t *testing.T) {
 		t.Fatalf("claims did not survive the binding base64 contract: got %q want %q", got, claims)
 	}
 
-	approval, err := SignBootnodeEnrollApproval(rootKey, chainID, nonce, uint64(now.Unix()), uint64(now.Unix())+600, b64(challenge.Envelope))
+	approval, err := SignBootnodeEnrollApproval(rootKey, chainID, nonce, uint64(now.Unix()), uint64(now.Unix())+600, b64(challenge.Envelope), b64(challenge.PublicKey))
 	if err != nil {
 		t.Fatalf("sign approval: %v", err)
 	}
@@ -252,4 +252,45 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestBootnodeEnrollmentCodePassthrough: a rejected enrollment surfaces the core's stable
+// reason code through VerifyBootnodeEnrollmentDetail, and the nonce is not consumed.
+func TestBootnodeEnrollmentCodePassthrough(t *testing.T) {
+	bootKey := fixedHexKey(t, "1a2b3c4d5e6f7081928374655647382910fedcba0987654321fedcba09876543")
+	rootKey := fixedHexKey(t, "ffffeeeeddddccccbbbbaaaa9999888877776666555544443333222211110000")
+	const chainID, operator, nonce = "knirv-testnet-1", "operator:alice", "enroll:code"
+	now := time.Unix(1_700_000_000, 0)
+	challenge, err := SignBootnodeEnrollChallenge(bootKey, chainID, nonce, uint64(now.Unix()), uint64(now.Unix())+600, operator, []byte("x"))
+	if err != nil {
+		t.Fatalf("sign challenge: %v", err)
+	}
+	approval, err := SignBootnodeEnrollApproval(rootKey, chainID, nonce, uint64(now.Unix()), uint64(now.Unix())+600, b64(challenge.Envelope), b64(challenge.PublicKey))
+	if err != nil {
+		t.Fatalf("sign approval: %v", err)
+	}
+	rootPK := b64(approval.PublicKey)
+	good := BootnodeEnrollment{Challenge: challenge, Approval: approval}
+
+	bad := good
+	bad.Challenge.Signature = make([]byte, 64)
+	store := NewMemoryNonceStore()
+	valid, code, err := VerifyBootnodeEnrollmentDetail(bad, rootPK, operator, store, now)
+	if err != nil || valid || code != EnrollCodeChallengeSignature {
+		t.Fatalf("tampered challenge: valid=%v code=%q err=%v, want code %q", valid, code, err, EnrollCodeChallengeSignature)
+	}
+	if ok, _ := store.Consume(nonce); !ok {
+		t.Fatal("a rejected enrollment must not consume its nonce")
+	}
+
+	// Key substitution: same envelope bytes re-signed under another key, original approval.
+	attacker := fixedHexKey(t, "0505050505050505050505050505050505050505050505050505050505050505")
+	sub, err := SignBootnodeEnrollChallenge(attacker, chainID, nonce, uint64(now.Unix()), uint64(now.Unix())+600, operator, []byte("x"))
+	if err != nil {
+		t.Fatalf("sign attacker challenge: %v", err)
+	}
+	valid, code, err = VerifyBootnodeEnrollmentDetail(BootnodeEnrollment{Challenge: sub, Approval: approval}, rootPK, operator, NewMemoryNonceStore(), now)
+	if err != nil || valid || code != EnrollCodeApprovalPayloadMismatch {
+		t.Fatalf("substituted boot key: valid=%v code=%q err=%v, want %q", valid, code, err, EnrollCodeApprovalPayloadMismatch)
+	}
 }

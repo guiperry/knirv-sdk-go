@@ -34,11 +34,8 @@ func deriveSeal(ctx context.Context, path string, password []byte) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	request, err := keyFileRequest(path, data, password)
-	if err != nil {
-		return nil, err
-	}
-	// The core authenticates the envelope and runs the HKDF (secrets.bao_seal_key).
+	request := keyFileRequest(path, data, password)
+	// The core runs scrypt, authenticates the envelope and runs the HKDF (secrets.bao_seal_key).
 	var out struct {
 		Seal string `json:"seal_base64"`
 	}

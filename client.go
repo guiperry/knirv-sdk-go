@@ -57,7 +57,7 @@ func (c *Client) Execute(ctx context.Context, action string, payload []byte) ([]
 		return nil, fmt.Errorf("marshal KNIRV request: %w", err)
 	}
 
-	runner, err := core.Default()
+	runner, err := core.Default(ctx)
 	if err != nil {
 		return nil, err
 	}

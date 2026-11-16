@@ -112,16 +112,35 @@ func VerifySignature(b *Bundle, resolver KeyResolver) (bool, error) {
 	if !ok {
 		return false, &VerifyError{Code: "signature", Message: "unknown signing key " + b.Signature.KeyID}
 	}
-	sig, err := base64.StdEncoding.DecodeString(b.Signature.Value)
-	if err != nil {
-		return false, &VerifyError{Code: "signature", Message: "malformed signature encoding"}
-	}
 	msg, err := SigningMessage(b)
 	if err != nil {
 		return false, err
 	}
-	if !ed25519.Verify(pub, msg, sig) {
-		return false, &VerifyError{Code: "signature", Message: "signature verification failed"}
+	return verifyEd25519(pub, msg, b.Signature.Value)
+}
+
+// verifyEd25519 checks an Ed25519 signature in the SDK core (evidence.ed25519_verify),
+// which owns the key and signature checks. A refusal carries the core's code and
+// message; the code is kept in the message so each failure class stays visible.
+func verifyEd25519(pub ed25519.PublicKey, msg []byte, signatureB64 string) (bool, error) {
+	var verdict struct {
+		Valid   bool   `json:"valid"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
 	}
-	return true, nil
+	if err := evidence("evidence.ed25519_verify", map[string]any{
+		"public_key_base64": base64.StdEncoding.EncodeToString(pub),
+		"message_base64":    base64.StdEncoding.EncodeToString(msg),
+		"signature_base64":  signatureB64,
+	}, &verdict); err != nil {
+		return false, err
+	}
+	if verdict.Valid {
+		return true, nil
+	}
+	message := verdict.Message
+	if message == "" {
+		message = "signature verification failed"
+	}
+	return false, &VerifyError{Code: "signature", Message: message}
 }

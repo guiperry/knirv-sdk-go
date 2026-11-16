@@ -5,11 +5,13 @@ import (
 	"fmt"
 )
 
-// HeadPrefix is where the daemon serves the HEAD. One constant, so the route
-// namespace is changed in one place.
+// HeadPrefix is the route prefix of HEAD: the vision-language and mirrored-text
+// surface (/models/head). HEART's decision core is not served here; it lives at
+// HeartDecisionPrefix (registry.go). One constant, so the route namespace is
+// changed in one place.
 const HeadPrefix = "/models/head"
 
-// Decision is one decision head's output.
+// Decision is one decision head's output from HEART's decision core.
 type Decision struct {
 	Name          string    `json:"name"`
 	Kind          string    `json:"kind"`
@@ -31,7 +33,9 @@ type Candidate struct {
 	Probability float32 `json:"probability"`
 }
 
-// Reasoning mirrors the knirv-head crate's Reasoning JSON (head/src/model.rs).
+// Reasoning mirrors the HEART decision crate's Reasoning JSON (currently the
+// knirv-head crate, head/src/model.rs; renamed to knirv-heart-decision per
+// pendingImplementations/models_migration.md §3.1).
 type Reasoning struct {
 	PlanTokens          []uint32   `json:"plan_tokens"`
 	HaltingSteps        int        `json:"halting_steps"`
@@ -46,7 +50,7 @@ type Reasoning struct {
 	PolicyBundleHash    string     `json:"policy_bundle_hash"`
 }
 
-// Decision returns the named head, or nil.
+// Decision returns the named decision head, or nil.
 func (r *Reasoning) Decision(name string) *Decision {
 	for i := range r.Decisions {
 		if r.Decisions[i].Name == name {
@@ -139,7 +143,8 @@ func (m *Manifest) DatasetManifestHash() string {
 	return c.DatasetManifestHash
 }
 
-// byte-v1 layout, identical to knirv_head::tokenizer and ARENA's headTokenizer.ts.
+// byte-v1 layout, identical to the decision crate's tokenizer (knirv_head::tokenizer
+// until the HEART rename) and ARENA's headTokenizer.ts.
 const (
 	ByteV1EOS     uint32 = 259
 	ByteV1PAD     uint32 = 256
@@ -159,7 +164,7 @@ func EncodeByteV1(text string, width int) []uint32 {
 	return out.Tokens
 }
 
-// EncodeChoiceSetV1 builds the leakage-safe set-head input after HEAD's
+// EncodeChoiceSetV1 builds the leakage-safe set-decision input after HEART's
 // model-owned summary slot: BOS question SEP state SEP (OPT_OPEN choice OPT_END)*.
 func EncodeChoiceSetV1(question, state string, choices []string, width int) []uint32 {
 	var out struct {

@@ -4,7 +4,7 @@ package core
 
 const (
 	// Version is the core/Cargo.toml version this package is pinned to.
-	Version = "0.2.0"
+	Version = "0.2.1"
 	// Digest is the SHA-256 of that version's knirv_core.wasm.
-	Digest = "38a493a7a32c63c431996c3a7f55d284e2d4411742fe4abcc93a3f50c904424e"
+	Digest = "f19735d836477475fe262497f647435fb992f74d7ed5703746af9534f2436ea3"
 )
