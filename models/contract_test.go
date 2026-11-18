@@ -30,6 +30,32 @@ func TestContractMirrorsCore(t *testing.T) {
 		t.Fatalf("HeartDecisionPrefix = %q, must be HeartPrefix+%q", HeartDecisionPrefix, "/decide")
 	}
 
+	// The role strings must be the core's role names. The core platform_status
+	// vector is generated from models.rs roles(), so every pinned role must appear
+	// as a row in it; this runs offline and before the wasm-backed checks below.
+	var coreCases map[string]struct {
+		Roles []RoleLine `json:"roles"`
+	}
+	load(t, "platform_status.json", &coreCases)
+	coreRoles := map[string]bool{}
+	for _, c := range coreCases {
+		for _, r := range c.Roles {
+			coreRoles[r.Role] = true
+		}
+	}
+	for _, pin := range []struct{ name, got, want string }{
+		{"RoleDecider", RoleDecider, "decide"},
+		{"RoleVision", RoleVision, "vision"},
+		{"RoleHands", RoleHands, "server_tasks"},
+	} {
+		if pin.got != pin.want {
+			t.Fatalf("%s = %q, must mirror the core role %q", pin.name, pin.got, pin.want)
+		}
+		if !coreRoles[pin.want] {
+			t.Fatalf("%s: core platform_status vector has no role row %q", pin.name, pin.want)
+		}
+	}
+
 	reg, ok := tryDefault()
 	if !ok {
 		t.Skip("SDK core wasm unavailable offline; skipping frame-backed parity check")

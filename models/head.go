@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -172,4 +173,14 @@ func EncodeChoiceSetV1(question, state string, choices []string, width int) []ui
 	}
 	mustCore("models.encode_choice_set_v1", map[string]any{"question": question, "state": state, "choices": choices, "width": width}, &out)
 	return out.Tokens
+}
+
+// Reason runs the decision core on already-encoded byte-v1 tokens. It was the
+// HEAD-era decision method (POST HeadPrefix+"/reason") and was renamed to Decide
+// without an alias; it is restored here as a thin wrapper over the HEART route.
+//
+// Deprecated: use Decide. Reason calls HEART's decision route
+// (HeartDecisionPrefix+"/reason"), not HEAD's.
+func (c *Client) Reason(ctx context.Context, tokens []uint32) (*Reasoning, error) {
+	return c.Decide(ctx, tokens)
 }

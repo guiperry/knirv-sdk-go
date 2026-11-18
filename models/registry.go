@@ -22,22 +22,21 @@ const (
 	ManifestPath = "/models/manifest"
 	HeartPrefix  = "/models/heart"
 	HasherPrefix = "/models/hasher"
-	HandsPrefix  = "/models/hands"
-	// HeartDecisionPrefix is where HEART publishes the decision core (formerly
-	// HEAD's reasoning); HEART owns /models/heart/decide and the legacy
-	// /models/head/reason route has been retired. This value mirrors the
-	// decision-route contract defined in the Rust core (models.rs roles()); the
-	// core is authoritative and TestContractMirrorsCore pins the two together.
-	HeartDecisionPrefix = "/models/heart/decide"
+	// HandsPrefix and HeartDecisionPrefix are defined beside their clients
+	// (hands.go, heart.go).
 )
 
-// Roles in the registry. HASHER validates, HEART generates, HEAD reasons,
-// HANDS proposes structured task fields from a HEART decision.
+// Roles in the registry. HASHER validates, HEART generates and decides (the
+// "decide" role), HEAD is vision, HANDS serves server tasks.
 const (
 	RoleValidator = "validator"
 	RoleGenerator = "generator"
 	RoleReasoner  = "reasoner"
-	RoleHands     = "server_tasks"
+	// RoleDecider is HEART's decision role. The string is the core role name
+	// ("decide", models.rs roles()); TestContractMirrorsCore pins it against the
+	// core platform_status vector.
+	RoleDecider = "decide"
+	RoleHands   = "server_tasks"
 	// RoleVision is HEAD's post-migration role: the vision / multimodal model and
 	// the mirrored text generator. The role and its frame stage (head.vision) are
 	// defined in the Rust core (models.rs roles() and the frame constitution); the

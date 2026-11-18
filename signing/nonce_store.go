@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"syscall"
 )
 
 // NonceStore durably records consumed boot-node enrollment nonces so a verified
@@ -65,10 +64,10 @@ func (s *FileNonceStore) Consume(nonce string) (bool, error) {
 		return false, err
 	}
 	defer lf.Close()
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(lf); err != nil {
 		return false, err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	defer unlockFile(lf)
 	set, err := readNonceSet(s.path)
 	if err != nil {
 		return false, err
