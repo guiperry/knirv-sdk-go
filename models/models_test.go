@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -95,9 +96,9 @@ func TestEncodeChoiceSetV1SharedVector(t *testing.T) {
 
 func TestAdviceCases(t *testing.T) {
 	var cases []struct {
-		Name      string        `json:"name"`
-		Reasoning Reasoning     `json:"reasoning"`
-		Context   AdviseContext `json:"context"`
+		Name      string          `json:"name"`
+		Reasoning Reasoning       `json:"reasoning"`
+		Context   AdviseContext   `json:"context"`
 		Questions json.RawMessage `json:"questions"`
 		Expect    struct {
 			Abstain bool    `json:"abstain"`
@@ -164,17 +165,258 @@ func TestOntologyVectorsDecode(t *testing.T) {
 		Response OntologySyncResult `json:"response"`
 	}
 	load(t, "ontology_sync.json", &syncVector)
-	if syncVector.Request.Ontology == nil || syncVector.Request.OrganizationID != "acme" || syncVector.Response.Version == "" || len(syncVector.Response.NotIndexed) != 2 {
-		t.Fatalf("ontology sync vector incomplete: %+v", syncVector)
+	if syncVector.Request.Ontology == nil || syncVector.Request.OrganizationID != "acme" {
+		t.Fatalf("ontology sync request incomplete: %+v", syncVector.Request)
 	}
+	// The raw fixture is decoded a second time into a literal-only shape so the
+	// pinned values below are checked against the file, not only the typed struct.
+	var syncLiteral struct {
+		Response struct {
+			Tenant     string   `json:"tenant"`
+			Version    string   `json:"ontology_version"`
+			NotIndexed []string `json:"not_indexed"`
+			Passages   int      `json:"passages"`
+			Facts      int      `json:"facts"`
+			Segment    string   `json:"segment"`
+		} `json:"response"`
+	}
+	load(t, "ontology_sync.json", &syncLiteral)
+	gotSync := syncVector.Response
+	if gotSync.Tenant != "acme" || gotSync.Version != "ont1:fixture" || syncLiteral.Response.Version != gotSync.Version {
+		t.Fatalf("ontology sync response: tenant=%q version=%q raw version=%q", gotSync.Tenant, gotSync.Version, syncLiteral.Response.Version)
+	}
+	wantNotIndexed := []string{"trade_secrets", "user_data"}
+	if !slices.Equal(gotSync.NotIndexed, wantNotIndexed) || !slices.Equal(syncLiteral.Response.NotIndexed, wantNotIndexed) {
+		t.Fatalf("not_indexed: typed=%v raw=%v want=%v", gotSync.NotIndexed, syncLiteral.Response.NotIndexed, wantNotIndexed)
+	}
+
+	// Passages, facts and segment are checked against the raw fixture values. The
+	// guard stops the comparison from passing when the fixture lacks the fields.
+	if syncLiteral.Response.Passages == 0 || syncLiteral.Response.Facts == 0 || syncLiteral.Response.Segment == "" {
+		t.Fatalf("sync fixture lacks passages/facts/segment: %+v", syncLiteral.Response)
+	}
+	if gotSync.Passages != syncLiteral.Response.Passages || gotSync.Facts != syncLiteral.Response.Facts || gotSync.Segment != syncLiteral.Response.Segment {
+		t.Fatalf("sync counters: passages=%d facts=%d segment=%q, raw passages=%d facts=%d segment=%q",
+			gotSync.Passages, gotSync.Facts, gotSync.Segment, syncLiteral.Response.Passages, syncLiteral.Response.Facts, syncLiteral.Response.Segment)
+	}
+
 	var checkVector struct {
 		Request        OntologyClaim        `json:"request"`
 		Response       OntologyVerdict      `json:"response"`
 		RemoveResponse OntologyRemoveResult `json:"remove_response"`
 	}
 	load(t, "ontology_check.json", &checkVector)
-	if checkVector.Request.Subject != "decision rights" || checkVector.Response.Outcome != "supported" || len(checkVector.Response.Hits) != 1 || checkVector.RemoveResponse.Status != "removed" {
-		t.Fatalf("ontology check vector incomplete: %+v", checkVector)
+	if checkVector.Request.Subject != "decision rights" || checkVector.Request.Property != "refund approval" || checkVector.Request.Value != "director" {
+		t.Fatalf("ontology check request: %+v", checkVector.Request)
+	}
+	v := checkVector.Response
+	if v.Outcome != "supported" || v.Reason != `the ontology states "director"` {
+		t.Fatalf("ontology verdict: outcome=%q reason=%q", v.Outcome, v.Reason)
+	}
+	if v.OntologyVersion != "ont1:fixture" || !slices.Equal(v.Stated, []string{"director"}) {
+		t.Fatalf("ontology version/values: version=%q stated=%v", v.OntologyVersion, v.Stated)
+	}
+	if len(v.Hits) != 1 {
+		t.Fatalf("hits: got %d, want 1", len(v.Hits))
+	}
+	h := v.Hits[0]
+	if h.SpanID != "span-ontology" || h.Snapshot != "sha256:fixture" || h.Start != 0 || h.End != 44 ||
+		h.Text != "decision rights — refund approval: director" || h.Tier != "ontology" || h.Score != 1 ||
+		h.Source != "ontology:acme" || h.Revision != "ont1:fixture" {
+		t.Fatalf("hit fields: %+v", h)
+	}
+	if checkVector.RemoveResponse.Tenant != "acme" || checkVector.RemoveResponse.Status != "removed" {
+		t.Fatalf("remove response: %+v", checkVector.RemoveResponse)
+	}
+	// Every remove field is also read from the raw fixture, not only the typed struct.
+	var removeLiteral struct {
+		RemoveResponse struct {
+			Tenant string `json:"tenant"`
+			Status string `json:"status"`
+		} `json:"remove_response"`
+	}
+	load(t, "ontology_check.json", &removeLiteral)
+	if removeLiteral.RemoveResponse.Tenant == "" || removeLiteral.RemoveResponse.Status == "" {
+		t.Fatalf("remove fixture incomplete: %+v", removeLiteral.RemoveResponse)
+	}
+	if checkVector.RemoveResponse.Tenant != removeLiteral.RemoveResponse.Tenant || checkVector.RemoveResponse.Status != removeLiteral.RemoveResponse.Status {
+		t.Fatalf("remove response %+v, raw fixture %+v", checkVector.RemoveResponse, removeLiteral.RemoveResponse)
+	}
+}
+
+// fixtureEnvelope keeps each fixture section as raw bytes so a test can serve
+// the exact response body the vector file holds.
+type fixtureEnvelope struct {
+	Request        json.RawMessage `json:"request"`
+	Response       json.RawMessage `json:"response"`
+	RemoveResponse json.RawMessage `json:"remove_response"`
+}
+
+func loadEnvelope(t *testing.T, name string) fixtureEnvelope {
+	t.Helper()
+	var e fixtureEnvelope
+	load(t, name, &e)
+	return e
+}
+
+// decodeMap decodes a JSON body into a map with no Go types involved, so a
+// comparison on it cannot depend on any struct json tag.
+func decodeMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("body %s: %v", body, err)
+	}
+	return m
+}
+
+// typedMap marshals a client result back to JSON, so the keys are the wire keys
+// the Go struct tags produce.
+func typedMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeMap(t, b)
+}
+
+// wireMatchesFixture requires the client's wire keys to equal the fixture's keys
+// and values. A key the Go struct emits that the fixture lacks must be named in
+// allowedExtra; any other extra key fails, and so does a missing or renamed key.
+func wireMatchesFixture(t *testing.T, name string, got, want map[string]any, allowedExtra ...string) {
+	t.Helper()
+	for k := range got {
+		if _, ok := want[k]; ok {
+			continue
+		}
+		if !slices.Contains(allowedExtra, k) {
+			t.Fatalf("%s: client emits key %q that the fixture does not carry: %v", name, k, got)
+		}
+		delete(got, k)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s: client wire %v != fixture %v", name, got, want)
+	}
+}
+
+// TestOntologyClientServesFixtureBodies sends the fixture response bodies
+// through the real Client, byte-for-byte, and checks the decoded results and
+// the outbound requests against the fixture files.
+func TestOntologyClientServesFixtureBodies(t *testing.T) {
+	syncFx := loadEnvelope(t, "ontology_sync.json")
+	checkFx := loadEnvelope(t, "ontology_check.json")
+
+	var cfg OntologyConfig
+	if err := json.Unmarshal(syncFx.Request, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var claim OntologyClaim
+	if err := json.Unmarshal(checkFx.Request, &claim); err != nil {
+		t.Fatal(err)
+	}
+	// The check fixture carries no tenant; the client sends it in a header only.
+	claim.Tenant = cfg.OrganizationID
+
+	var wantSync OntologySyncResult
+	if err := json.Unmarshal(syncFx.Response, &wantSync); err != nil {
+		t.Fatal(err)
+	}
+	var wantVerdict OntologyVerdict
+	if err := json.Unmarshal(checkFx.Response, &wantVerdict); err != nil {
+		t.Fatal(err)
+	}
+	var wantRemove OntologyRemoveResult
+	if err := json.Unmarshal(checkFx.RemoveResponse, &wantRemove); err != nil {
+		t.Fatal(err)
+	}
+
+	var sentSync, sentCheck []byte
+	var checkTenant, removeQuery string
+	mux := http.NewServeMux()
+	mux.HandleFunc(HasherPrefix+"/ontology/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("X-KNIRV-Privilege") != "operator" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		sentSync, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(syncFx.Response)
+	})
+	mux.HandleFunc(HasherPrefix+"/ontology", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.Header.Get("X-KNIRV-Privilege") != "operator" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		removeQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(checkFx.RemoveResponse)
+	})
+	mux.HandleFunc(HasherPrefix+"/ontology/check", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		checkTenant = r.Header.Get("X-KNIRV-Tenant")
+		sentCheck, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(checkFx.Response)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c, ctx := NewClient(srv.URL, nil), context.Background()
+
+	gotSync, err := c.SyncOntology(ctx, cfg)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !reflect.DeepEqual(*gotSync, wantSync) {
+		t.Fatalf("sync result %+v, want fixture %+v", *gotSync, wantSync)
+	}
+	// Tag-independent: the client's wire keys must match the raw fixture body.
+	// "unchanged" is the one allowed extra key: OntologySyncResult emits it
+	// (no omitempty) and the sync fixture does not carry it.
+	wireMatchesFixture(t, "sync", typedMap(t, *gotSync), decodeMap(t, syncFx.Response), "unchanged")
+	var sent OntologyConfig
+	if err := json.Unmarshal(sentSync, &sent); err != nil {
+		t.Fatalf("sync body %s: %v", sentSync, err)
+	}
+	if sent.OrganizationID != "acme" || !reflect.DeepEqual(sent, cfg) {
+		t.Fatalf("sync body %s does not carry the fixture request", sentSync)
+	}
+
+	gotVerdict, err := c.CheckOntology(ctx, claim)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if !reflect.DeepEqual(*gotVerdict, wantVerdict) {
+		t.Fatalf("check result %+v, want fixture %+v", *gotVerdict, wantVerdict)
+	}
+	wireMatchesFixture(t, "check", typedMap(t, *gotVerdict), decodeMap(t, checkFx.Response))
+	if checkTenant != "acme" {
+		t.Fatalf("X-KNIRV-Tenant = %q, want acme", checkTenant)
+	}
+	var checkBody map[string]any
+	if err := json.Unmarshal(sentCheck, &checkBody); err != nil {
+		t.Fatalf("check body %s: %v", sentCheck, err)
+	}
+	if _, leaked := checkBody["tenant"]; leaked {
+		t.Fatalf("tenant leaked into check body: %s", sentCheck)
+	}
+	if checkBody["subject"] != "decision rights" || checkBody["property"] != "refund approval" || checkBody["value"] != "director" {
+		t.Fatalf("check body %s does not carry the fixture claim", sentCheck)
+	}
+
+	gotRemove, err := c.RemoveOntology(ctx, "acme")
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !reflect.DeepEqual(*gotRemove, wantRemove) {
+		t.Fatalf("remove result %+v, want fixture %+v", *gotRemove, wantRemove)
+	}
+	wireMatchesFixture(t, "remove", typedMap(t, *gotRemove), decodeMap(t, checkFx.RemoveResponse))
+	if removeQuery != "tenant=acme" {
+		t.Fatalf("remove query = %q, want tenant=acme", removeQuery)
 	}
 }
 
@@ -198,6 +440,17 @@ func TestOntologyClientRoutesAndHeaders(t *testing.T) {
 		if r.Method != http.MethodPost || r.Header.Get("X-KNIRV-Tenant") != "acme" {
 			w.WriteHeader(http.StatusForbidden)
 			return
+		}
+		var wire map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+			t.Errorf("ontology check body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		for key, want := range map[string]string{"subject": "s", "property": "p", "value": "v"} {
+			if got, _ := wire[key].(string); got != want {
+				t.Errorf("ontology check wire key %q = %v, want %q", key, wire[key], want)
+			}
 		}
 		_ = json.NewEncoder(w).Encode(OntologyVerdict{Outcome: "supported", Reason: "fixture"})
 	})
@@ -533,67 +786,51 @@ func TestVerifyFixture(t *testing.T) {
 	}
 }
 
-// TestHeartGenerateRequestVectorRoundtrip pins the wire field name `with_decision`
-// (snake_case, matching the Rust core contract) by round-tripping the shared
-// heart_generate.json test vector: unmarshalling the request must populate
-// WithDecision, and marshalling a fresh request must emit `with_decision`. This is
-// the Go counterpart of the Rust core round-trip test.
+// TestHeartGenerateRequestVectorRoundtrip pins the plain HEART generate contract by
+// round-tripping the shared heart_generate.json vector: the request carries only the
+// prompt, and marshalling emits no decision side-channel. This is the Go counterpart
+// of the Rust core round-trip test.
 func TestHeartGenerateRequestVectorRoundtrip(t *testing.T) {
 	var v struct {
 		Request HeartGenerateRequest `json:"request"`
 	}
 	load(t, "heart_generate.json", &v)
-	if !v.Request.WithDecision {
-		t.Fatalf("vector request with_decision = %v, want true", v.Request.WithDecision)
+	if v.Request.Prompt != "restart the failing service" {
+		t.Fatalf("vector request prompt = %q", v.Request.Prompt)
 	}
-
-	// Marshalling a fresh request must emit the snake_case wire field.
-	b, err := json.Marshal(HeartGenerateRequest{Prompt: "x", WithDecision: true})
+	b, err := json.Marshal(HeartGenerateRequest{Prompt: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"with_decision":true`) {
-		t.Fatalf("marshalled request missing with_decision field: %s", b)
-	}
-
-	// Plain request: no with_decision must round-trip as false.
-	var plain HeartGenerateRequest
-	if err := json.Unmarshal([]byte(`{"prompt":"hello"}`), &plain); err != nil {
-		t.Fatal(err)
-	}
-	if plain.WithDecision {
-		t.Fatal("plain request should default WithDecision to false")
+	if string(b) != `{"prompt":"x"}` {
+		t.Fatalf("plain request wire body = %s, want {\"prompt\":\"x\"}", b)
 	}
 }
 
-// TestHeartGenerateWithDecisionSendsWithDecision is a binding-level check: the Go
-// client must actually send `with_decision:true` on the wire and reach decision
-// resolution (a non-nil decision in the response), not silently degrade to plain
-// generation.
-func TestHeartGenerateWithDecisionSendsWithDecision(t *testing.T) {
+// TestHeartGenerateSendsPlainBody is a binding-level check: HeartGenerate posts only
+// {"prompt"} to /models/heart/generate (no with_decision or decision field) and
+// returns the plain text from the response.
+func TestHeartGenerateSendsPlainBody(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
-		gotBody = string(raw)
+		gotBody = strings.TrimSpace(string(raw))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"text":"restarting service","ready":true,"progress":1.0,"decision":{"decisions":[{"name":"action","selected":"restart-service","abstain":false}],"abstained":false},"abstained":false}`))
+		w.Write([]byte(`{"text":"restarting service","ready":true,"progress":1.0}`))
 	}))
 	defer srv.Close()
 
 	c := NewClient(srv.URL, srv.Client())
-	out, err := c.HeartGenerateWithDecision(context.Background(), "restart the failing service", true)
+	text, err := c.HeartGenerate(context.Background(), "restart the failing service")
 	if err != nil {
-		t.Fatalf("HeartGenerateWithDecision: %v", err)
+		t.Fatalf("HeartGenerate: %v", err)
 	}
-	if !strings.Contains(gotBody, `"with_decision":true`) {
-		t.Fatalf("client did not send with_decision:true on the wire: %s", gotBody)
+	if text != "restarting service" {
+		t.Fatalf("text = %q, want restarting service", text)
 	}
-	if out.Decision == nil {
-		t.Fatal("expected a resolved decision in the response, got none (silently degraded)")
-	}
-	if out.Abstained {
-		t.Fatal("expected the decision to be resolved, not abstained")
+	if gotBody != `{"prompt":"restart the failing service"}` {
+		t.Fatalf("wire body = %s, want plain prompt only", gotBody)
 	}
 }
 

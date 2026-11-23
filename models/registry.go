@@ -404,21 +404,6 @@ func (c *Client) HeartGenerate(ctx context.Context, prompt string) (string, erro
 	return out.Text, nil
 }
 
-// HeartGenerateWithDecision sends a decision-aware generate request. When resolve
-// is true HEART consults the decision core; otherwise it degrades to plain
-// generation and never fails just because the core is unavailable. It returns the
-// response so callers can read the text and the decision envelope.
-func (c *Client) HeartGenerateWithDecision(ctx context.Context, prompt string, resolve bool) (*HeartGenerateResponse, error) {
-	var out HeartGenerateResponse
-	if err := c.postJSON(ctx, HeartPrefix+"/generate", HeartGenerateRequest{Prompt: prompt, WithDecision: resolve}, &out); err != nil {
-		return nil, err
-	}
-	if out.Error != "" {
-		return nil, fmt.Errorf("heart: %s", out.Error)
-	}
-	return &out, nil
-}
-
 // HasherValidate runs the logical validator.
 func (c *Client) HasherValidate(ctx context.Context, req HasherValidateRequest) (*HasherValidateResult, error) {
 	var out HasherValidateResult

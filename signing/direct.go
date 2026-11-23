@@ -251,6 +251,9 @@ func SignMessage(privateKey []byte, envelope MessageEnvelope) (SignedMessage, er
 // VerifyMessage checks a signed message against the expected domain fields and
 // validity window at now.
 func VerifyMessage(message SignedMessage, expectedDomain, expectedPurpose, expectedChainID, expectedNonce string, now time.Time) error {
+	if err := requireLowS(message.Signature); err != nil {
+		return err
+	}
 	return call("signing.verify_message", map[string]any{
 		"signed": message.wire(), "domain": expectedDomain, "purpose": expectedPurpose,
 		"chain_id": expectedChainID, "nonce": expectedNonce, "now_unix": now.Unix(),
@@ -261,6 +264,9 @@ func VerifyMessage(message SignedMessage, expectedDomain, expectedPurpose, expec
 // envelope's unique nonce to be chosen by KNIRVCONTROLLER. Application-level
 // nonces remain part of expectedPayload and are checked byte-for-byte.
 func VerifyMessagePayload(message SignedMessage, expectedDomain, expectedPurpose, expectedChainID string, expectedPayload []byte, now time.Time) error {
+	if err := requireLowS(message.Signature); err != nil {
+		return err
+	}
 	return call("signing.verify_message_payload", map[string]any{
 		"signed": message.wire(), "domain": expectedDomain, "purpose": expectedPurpose,
 		"chain_id": expectedChainID, "payload_base64": b64(expectedPayload), "now_unix": now.Unix(),
